@@ -57,7 +57,7 @@
     const type = (el.getAttribute("type") || (el.tagName === "INPUT" ? "text" : "")).toLowerCase();
     if (el.tagName === "TEXTAREA") return isVisible(el);
     if (el.tagName !== "INPUT") return false;
-    if (!["text", "number", "tel", "search"].includes(type)) return false;
+    if (!["text", "number", "tel", "search", "date"].includes(type)) return false;
     return isVisible(el);
   }
 
@@ -123,12 +123,9 @@
     return null;
   }
 
-  function controlAfterTextNode(textNode, accept) {
-    const scope = scopeFor(textNode);
-    if (!scope.contains(textNode)) return null;
+  function controlInScope(textNode, scope, accept) {
     const stopAt = nextLabelNode(textNode, scope);
-    const controls = scope.querySelectorAll("input, textarea");
-    for (const el of controls) {
+    for (const el of scope.querySelectorAll("input, textarea")) {
       if (!accept(el)) continue;
       if (!isAfter(textNode, el)) continue;
       if (stopAt && !isAfter(el, stopAt)) continue;
@@ -137,12 +134,47 @@
     return null;
   }
 
-  function findField(predicate, options) {
+  // Sube unos niveles por si la etiqueta y el campo están en cajas hermanas (div > label + div > input).
+  function controlAfterTextNode(textNode, accept) {
+    let scope = scopeFor(textNode);
+    for (let level = 0; level < 4 && scope && scope !== document.body; level += 1) {
+      if (scope.contains(textNode)) {
+        const el = controlInScope(textNode, scope, accept);
+        if (el) return el;
+      }
+      scope = scope.parentElement;
+    }
+    return null;
+  }
+
+  function controlForLabel(predicate, accept) {
+    for (const label of document.querySelectorAll("label")) {
+      const text = norm(label.textContent);
+      if (!text || text.length > 180 || !predicate(text)) continue;
+      const el = label.htmlFor ? document.getElementById(label.htmlFor) : label.querySelector("input, textarea");
+      if (el && accept(el)) return el;
+    }
+    return null;
+  }
+
+  function controlByAttributes(attrTest, accept) {
+    for (const el of document.querySelectorAll("input, textarea")) {
+      if (!accept(el)) continue;
+      const attrs = norm(
+        [el.name, el.id, el.getAttribute("placeholder"), el.getAttribute("aria-label"), el.getAttribute("title")].join(" ")
+      );
+      if (attrs && attrTest(attrs)) return el;
+    }
+    return null;
+  }
+
+  function findField(predicate, options, used) {
     const wantsTextarea = Boolean(options && options.textarea);
-    const nodes = textNodes(predicate);
+    const accept = (el) => isTextControl(el) && !used.has(el);
+    const acceptKind = (el) => accept(el) && (!wantsTextarea || el.tagName === "TEXTAREA");
     let fallback = null;
-    for (const node of nodes) {
-      const el = controlAfterTextNode(node, isTextControl);
+    for (const node of textNodes(predicate)) {
+      const el = controlAfterTextNode(node, accept);
       if (!el) continue;
       if (wantsTextarea && el.tagName !== "TEXTAREA") {
         fallback = fallback || el;
@@ -150,7 +182,11 @@
       }
       return el;
     }
-    return wantsTextarea ? fallback : null;
+    return (
+      controlForLabel(predicate, acceptKind) ||
+      (options && options.attrs ? controlByAttributes(options.attrs, acceptKind) : null) ||
+      fallback
+    );
   }
 
   function findNueva(afterEl) {
@@ -174,17 +210,77 @@
     return name;
   }
 
+  // Formulario real de aplicaciones.aragon.es/fct (desarrollo.*.do): ids fijos y botón que llama a nuevo().
+  function detectPortalFields() {
+    const byId = (id) => {
+      const el = document.getElementById(id);
+      return el && isTextControl(el) ? el : null;
+    };
+    const fecha = byId("FECHA");
+    const horas = byId("HORAS");
+    const descripcion = document.getElementById("descripcion");
+    if (!fecha || !horas || !descripcion || descripcion.tagName !== "TEXTAREA" || !isVisible(descripcion)) return null;
+    const nueva =
+      [...document.querySelectorAll("button, input[type='button'], input[type='submit'], a")].find(
+        (el) => /\bnuevo\s*\(/.test(el.getAttribute("onclick") || el.getAttribute("href") || "") && isVisible(el)
+      ) || findNueva(descripcion);
+    if (!nueva) return null;
+    return {
+      fecha,
+      horas,
+      descripcion,
+      observaciones: byId("OBSERVACIONES"),
+      dificultades: byId("DIFICULTADES"),
+      nueva,
+    };
+  }
+
   function detectFields() {
-    const fecha = findField(
-      (text) => text.includes("fecha") && !text.includes("inicio") && !text.includes("fin")
+    const portal = detectPortalFields();
+    if (portal) {
+      return {
+        ok: true,
+        error: "",
+        fields: portal,
+        summary:
+          "Formulario encontrado: Fecha, Horas, Descripción" +
+          (portal.observaciones ? ", Observaciones" : "") +
+          (portal.dificultades ? ", Dificultades" : "") +
+          " y el botón Nueva.",
+      };
+    }
+    const used = new Set();
+    const take = (el) => {
+      if (el) used.add(el);
+      return el;
+    };
+    const fecha = take(
+      findField(
+        (text) => text.includes("fecha") && !text.includes("inicio") && !text.includes("fin"),
+        { attrs: (attrs) => attrs.includes("fecha") && !/inicio|fin|desde|hasta|oculta/.test(attrs) },
+        used
+      )
     );
-    const horas = findField((text) => /\bhoras\b/.test(text) && !text.includes("totales"));
-    const descripcion = findField(
-      (text) => text.includes("actividades desarrolladas") || text.includes("descripcion"),
-      { textarea: true }
+    const horas = take(
+      findField(
+        (text) => /\bhoras?\b/.test(text) && !text.includes("totales"),
+        { attrs: (attrs) => /hora/.test(attrs) && !/total/.test(attrs) },
+        used
+      )
     );
-    const observaciones = findField((text) => text.includes("observaciones"), { textarea: true });
-    const dificultades = findField((text) => text.includes("dificultad"), { textarea: true });
+    const descripcion = take(
+      findField(
+        (text) => text.includes("actividades desarrolladas") || text.includes("descripcion"),
+        { textarea: true, attrs: (attrs) => /descrip|actividad/.test(attrs) },
+        used
+      )
+    );
+    const observaciones = take(
+      findField((text) => text.includes("observaciones"), { textarea: true, attrs: (attrs) => attrs.includes("observ") }, used)
+    );
+    const dificultades = take(
+      findField((text) => text.includes("dificultad"), { textarea: true, attrs: (attrs) => attrs.includes("dificult") }, used)
+    );
     const nueva = findNueva(dificultades || descripcion || horas || fecha);
     const missing = [];
     if (!fecha) missing.push("Fecha");
@@ -193,12 +289,12 @@
     if (!nueva) missing.push("Nueva");
     const fields = { fecha, horas, descripcion, observaciones, dificultades, nueva };
     if (missing.length) {
+      const framed = window === window.top && document.querySelector("iframe, frame");
+      let hint = " Abre tu cuaderno y pulsa el icono de Desarrollo, en la página con Fecha, Horas y Nueva.";
+      if (framed) hint = " El formulario puede estar dentro de un marco de la página: recarga la página y vuelve a intentarlo.";
       return {
         ok: false,
-        error:
-          "Esta página no tiene el formulario de Desarrollo (" +
-          missing.join(", ") +
-          "). Abre tu cuaderno y pulsa el icono de Desarrollo, en la página con Fecha, Horas y Nueva.",
+        error: "No encuentro el formulario de Desarrollo (falta " + missing.join(", ") + ")." + hint,
         fields,
         summary: "",
       };
@@ -219,10 +315,11 @@
 
   function datesMatch(actual, expected) {
     const normalizeDate = (value) => {
-      const match = String(value || "")
-        .trim()
-        .match(/^(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{4})$/);
-      if (!match) return String(value || "").trim();
+      const text = String(value || "").trim();
+      const iso = text.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+      if (iso) return `${iso[3]}/${iso[2]}/${iso[1]}`;
+      const match = text.match(/^(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{4})$/);
+      if (!match) return text;
       return `${match[1].padStart(2, "0")}/${match[2].padStart(2, "0")}/${match[3]}`;
     };
     return normalizeDate(actual) === normalizeDate(expected);
@@ -235,7 +332,9 @@
   }
 
   function setControlValue(el, value) {
-    const text = String(value ?? "");
+    let text = String(value ?? "");
+    const es = text.match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
+    if (es && (el.getAttribute("type") || "").toLowerCase() === "date") text = `${es[3]}-${es[2]}-${es[1]}`;
     const proto = el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
     const descriptor = Object.getOwnPropertyDescriptor(proto, "value");
     if (el.readOnly) el.readOnly = false;
@@ -373,6 +472,39 @@
     return "timeout";
   }
 
+  function portalErrorText() {
+    const box = document.getElementById("error_container");
+    if (!box || window.getComputedStyle(box).display === "none") return "";
+    return [...box.querySelectorAll("li")]
+      .filter((li) => !li.classList.contains("elementoOculto"))
+      .map((li) => li.textContent.trim())
+      .filter(Boolean)
+      .join(" ");
+  }
+
+  // Nueva envía el formulario y recarga la página. El listado está paginado, así que
+  // que el día no aparezca no significa que no se haya guardado: se decide por el formulario.
+  async function afterSubmit(index, entry, fields) {
+    if (!dateAlreadyListed(entry.fecha, fields)) {
+      const errorText = portalErrorText();
+      if (errorText) {
+        await patchError(`${entry.fecha}: ${errorText}`);
+        return false;
+      }
+      if (fields.descripcion.value.trim()) {
+        await patchError(
+          `El portal ha vuelto con ${entry.fecha} sin confirmar que se haya guardado. Revisa el listado: si está, pulsa Saltar este día; si no, Continuar.`
+        );
+        return false;
+      }
+    }
+    await markDoneAndAdvance(index);
+    const after = await storageGet("run");
+    if (!after || after.status !== "running") return false;
+    await sleep(after.pauseMs ?? 1200);
+    return true;
+  }
+
   async function detectSoon() {
     let last = detectFields();
     for (let attempt = 0; attempt < 4 && !last.ok; attempt += 1) {
@@ -405,6 +537,11 @@
       if (fresh.phase === "working" || fresh.phase === "submitting") return false;
       await patchError((detected && detected.error) || "El formulario de Desarrollo no está en esta página.");
       return false;
+    }
+
+    if (run.phase === "submitting" && run.submittingFecha === entry.fecha && run.owner !== frameId) {
+      if (window !== window.top) return false;
+      return afterSubmit(index, entry, detected.fields);
     }
 
     if (dateAlreadyListed(entry.fecha, detected.fields)) {
@@ -447,7 +584,8 @@
 
     window.__cuadernoLastAlert = "";
     setControlValue(detected.fields.fecha, current.fecha);
-    setControlValue(detected.fields.horas, current.horas);
+    // El portal valida las horas con isNaN(): "7,5" lo rechaza, "7.5" no.
+    setControlValue(detected.fields.horas, String(current.horas).replace(",", "."));
     setControlValue(detected.fields.descripcion, current.descripcion);
     if (detected.fields.observaciones) {
       setControlValue(detected.fields.observaciones, current.observaciones || "");

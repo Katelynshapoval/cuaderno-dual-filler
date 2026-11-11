@@ -60,8 +60,53 @@
     return shadow.getElementById(id);
   }
 
+  const svg = (paths) =>
+    `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${paths}</svg>`;
+  const ICONS = {
+    logo: svg('<path d="M6 3h8l4 4v14H6z"/><path d="M9.5 13.5l2 2 3.5-4"/>'),
+    close: svg('<path d="M6 6l12 12M18 6L6 18"/>'),
+    collapse: svg('<path d="M6 15l6-6 6 6"/>'),
+    text: svg('<path d="M4 6h16M4 12h16M4 18h10"/>'),
+    calendar: svg('<rect x="3.5" y="5" width="17" height="15.5" rx="2"/><path d="M3.5 10h17M8 3v4M16 3v4M8 14h2M14 14h2M8 17h2"/>'),
+  };
+  const Cal = globalThis.CuadernoCalendar;
+  const KIND_LABEL = { t1: "Tipo 1", t2: "Tipo 2", t3: "Tipo 3", t4: "Tipo 4" };
+  // El calendario solo vive aquí, en memoria: no se guarda en chrome.storage.
+  let calendar = null;
+  const NEAR_LIMIT = 1700;
+
   function dias(count) {
     return count === 1 ? "1 día" : `${count} días`;
+  }
+
+  function setCount(el, length) {
+    el.textContent = `${length}/2000`;
+    el.classList.toggle("is-near", length >= NEAR_LIMIT);
+  }
+
+  function setChip(kind, text) {
+    els.chip.className = kind ? `chip ${kind}` : "chip";
+    els.chip.textContent = text;
+  }
+
+  function presetRange(name) {
+    const today = new Date();
+    today.setHours(12, 0, 0, 0);
+    const monday = new Date(today);
+    monday.setDate(today.getDate() - ((today.getDay() + 6) % 7));
+    let start = today;
+    let end = today;
+    if (name === "week") {
+      start = monday;
+    } else if (name === "last-week") {
+      start = new Date(monday);
+      start.setDate(monday.getDate() - 7);
+      end = new Date(monday);
+      end.setDate(monday.getDate() - 1);
+    } else if (name === "month") {
+      start = new Date(today.getFullYear(), today.getMonth(), 1, 12);
+    }
+    return [Plan.toISO(start), Plan.toISO(end)];
   }
 
   function weekdayInputs() {
@@ -89,7 +134,7 @@
       end: els.end.value,
       hoursByWeekday,
       skipZero: els.skipZero.checked,
-      commaDecimals: els.comma.checked,
+      commaDecimals: false,
       descripcion: els.descripcion.value,
       observaciones: els.observaciones.value,
       dificultades: els.dificultades.value,
@@ -103,7 +148,6 @@
     els.start.value = settings.start || "";
     els.end.value = settings.end || "";
     els.skipZero.checked = settings.skipZero !== false;
-    els.comma.checked = settings.commaDecimals !== false;
     els.descripcion.value = settings.descripcion || "";
     els.observaciones.value = settings.observaciones || "";
     els.dificultades.value = settings.dificultades || "";
@@ -112,6 +156,7 @@
     for (const input of weekdayInputs()) {
       input.value = hours[Number(input.dataset.dow)] ?? "0";
     }
+    els.extraText.open = Boolean(settings.observaciones || settings.dificultades);
   }
 
   function renderDays(settings) {
@@ -122,7 +167,7 @@
         open: row.querySelector(".day-extra") && !row.querySelector(".day-extra").hidden,
       });
     }
-    const plan = Plan.buildPlan({ ...settings, hourOverrides: settings.hourOverrides || {} });
+    const plan = Plan.buildPlan(withCalendar({ ...settings, hourOverrides: settings.hourOverrides || {} }));
     const fragment = document.createDocumentFragment();
     for (const entry of plan.entries) {
       const saved = previous.get(entry.iso);
@@ -133,13 +178,16 @@
       row.className = "day";
       row.dataset.iso = entry.iso;
       row.dataset.touched = touched ? "1" : "0";
+      row.dataset.kind = entry.calKind || "";
       if (Plan.parseHours(hours) <= 0) row.classList.add("is-off");
       if (touched) row.classList.add("is-custom");
+      if (entry.dow === 0 || entry.dow === 6) row.classList.add("is-weekend");
       row.innerHTML = `
-        <span class="dmy">${entry.fecha}</span>
         <span class="day-dow" title="${entry.dia}">${entry.diaCorto}</span>
+        <span class="dmy">${entry.fecha}</span>
+        <span class="tag"></span>
         <input class="hours" type="number" min="0" max="24" step="0.5" aria-label="Horas del ${entry.fecha}" />
-        <button type="button" class="text-toggle" aria-expanded="false">Texto</button>
+        <button type="button" class="text-toggle" aria-expanded="false" aria-label="Texto del ${entry.fecha}" title="Texto solo para este día">${ICONS.text}</button>
         <div class="day-extra" hidden>
           <textarea class="day-text" rows="2" maxlength="2000" placeholder="Descripción solo para este día. Vacío: se usa la principal."></textarea>
         </div>
@@ -148,6 +196,7 @@
       const extra = row.querySelector(".day-extra");
       const toggle = row.querySelector(".text-toggle");
       row.querySelector(".day-text").value = text;
+      toggle.classList.toggle("has-text", Boolean(text.trim()));
       if ((saved && saved.open) || text) {
         extra.hidden = false;
         toggle.setAttribute("aria-expanded", "true");
@@ -160,29 +209,52 @@
 
   function updateSummary() {
     const settings = readSettingsFromForm();
-    const plan = Plan.buildPlan(settings);
+    const plan = Plan.buildPlan(withCalendar(settings));
     const summary = Plan.summarize(plan);
-    els.descCount.textContent = `${settings.descripcion.length}/2000`;
-    els.obsCount.textContent = `${settings.observaciones.length}/2000`;
-    els.difCount.textContent = `${settings.dificultades.length}/2000`;
+    setCount(els.descCount, settings.descripcion.length);
+    setCount(els.obsCount, settings.observaciones.length);
+    setCount(els.difCount, settings.dificultades.length);
+    let custom = 0;
     for (const row of els.days.querySelectorAll(".day")) {
       const hours = Plan.parseHours(row.querySelector(".hours").value);
       row.classList.toggle("is-off", !(hours > 0));
       row.classList.toggle("is-custom", row.dataset.touched === "1");
+      if (row.dataset.touched === "1") custom += 1;
     }
+    els.resetHours.disabled = custom === 0;
+    els.dayCount.textContent = plan.entries.length ? dias(plan.entries.length) : "";
+
+    const weekly = settings.hoursByWeekday.reduce((total, value) => {
+      const hours = Plan.parseHours(value);
+      return total + (hours > 0 ? hours : 0);
+    }, 0);
+    els.weekTotal.textContent = `${Math.round(weekly * 100) / 100} h / semana`;
+
+    for (const button of els.presets.querySelectorAll(".preset")) {
+      const [start, end] = presetRange(button.dataset.preset);
+      button.classList.toggle("is-active", start === settings.start && end === settings.end);
+    }
+
     if (!summary.days) {
-      els.summary.textContent = plan.entries.length
+      els.summary.textContent = "Nada que rellenar";
+      els.summarySub.textContent = plan.entries.length
         ? "Todos los días de este intervalo están a 0 horas."
         : "No hay días en este intervalo.";
     } else {
       const span = summary.first === summary.last ? summary.first : `${summary.first} – ${summary.last}`;
       const skipped = summary.skipped === 1 ? " · 1 omitido" : summary.skipped ? ` · ${summary.skipped} omitidos` : "";
-      els.summary.textContent = `${dias(summary.days)} · ${summary.hours} h · ${span}${skipped}`;
+      els.summary.textContent = `${dias(summary.days)} · ${summary.hours} h`;
+      els.summarySub.textContent = `${span}${skipped}`;
     }
     els.hint.textContent = plan.errors[0] || "";
     const running = currentRun && currentRun.status === "running";
     els.fill.disabled = running || plan.errors.length > 0 || summary.days === 0;
     els.fill.textContent = `Rellenar ${dias(summary.days)}`;
+    if (!currentRun || !currentRun.status || currentRun.status === "idle") {
+      if (plan.errors.length) setChip("warn", "Revisar");
+      else if (!summary.days) setChip("", "Sin días");
+      else setChip("ok", "Listo");
+    }
     if (host) {
       host.dataset.days = String(summary.days);
       host.dataset.ready = "1";
@@ -218,33 +290,36 @@
     els.runActions.hidden = !active;
     els.resume.hidden = status === "running" || status === "done";
     els.skip.hidden = status !== "error";
-    els.stop.hidden = status !== "running" && status !== "paused";
-    els.stop.textContent = status === "paused" ? "En pausa" : "Parar";
+    els.stop.hidden = status !== "running";
     els.edit.hidden = status === "running";
+    els.summaryBox.hidden = active;
 
     const total = currentRun.entries?.length || 0;
     const index = Math.min(currentRun.index || 0, total);
-    const pct = total === 0 ? 0 : Math.round((Math.min(index, total) / total) * 100);
+    const done = status === "done" ? total : index;
+    const pct = total === 0 ? 0 : Math.round((done / total) * 100);
     els.progressWrap.hidden = !active;
+    els.progressWrap.classList.toggle("is-running", status === "running");
     els.progressBar.style.width = `${status === "done" ? 100 : pct}%`;
+    els.progressCount.textContent = `${done} / ${total}`;
 
     if (status === "running") {
       const fecha = currentRun.entries?.[index]?.fecha || "";
-      setBanner(
-        els.runBanner,
-        "warn",
-        fecha ? `Guardando ${index + 1} de ${total} · ${fecha}` : `Guardando ${dias(total)}…`
-      );
+      setChip("busy", "Rellenando");
+      els.progressLabel.textContent = fecha ? `Guardando ${fecha}…` : `Guardando ${dias(total)}…`;
+      setBanner(els.runBanner, "", "");
     } else if (status === "paused") {
-      setBanner(
-        els.runBanner,
-        "warn",
-        `En pausa, van ${index} de ${total}. Los días ya guardados siguen en el portal.`
-      );
+      setChip("warn", "En pausa");
+      els.progressLabel.textContent = "En pausa";
+      setBanner(els.runBanner, "warn", "Los días ya guardados siguen en el portal. Pulsa Continuar para seguir.");
     } else if (status === "error") {
       const fecha = currentRun.entries?.[index]?.fecha || "Este día";
+      setChip("bad", "Error");
+      els.progressLabel.textContent = "Detenido";
       setBanner(els.runBanner, "bad", `${fecha}: ${currentRun.error || "La página no ha aceptado este día."}`);
     } else if (status === "done") {
+      setChip("ok", "Hecho");
+      els.progressLabel.textContent = "Completado";
       setBanner(
         els.runBanner,
         "ok",
@@ -405,8 +480,146 @@
     const row = event.target.closest(".day");
     if (!row) return;
     if (event.target.classList.contains("hours")) row.dataset.touched = "1";
+    if (event.target.classList.contains("day-text")) {
+      row.querySelector(".text-toggle").classList.toggle("has-text", Boolean(event.target.value.trim()));
+    }
     updateSummary();
     persist();
+  }
+
+  function onPreset(event) {
+    const button = event.target.closest(".preset");
+    if (!button) return;
+    const [start, end] = presetRange(button.dataset.preset);
+    els.start.value = start;
+    els.end.value = end;
+    onStructureChange();
+  }
+
+  function onToken(event) {
+    const button = event.target.closest(".token");
+    if (!button) return;
+    const area = els.descripcion;
+    const from = area.selectionStart ?? area.value.length;
+    const to = area.selectionEnd ?? from;
+    area.setRangeText(button.dataset.token, from, to, "end");
+    area.focus();
+    area.dispatchEvent(new Event("input", { bubbles: true }));
+  }
+
+  function withCalendar(settings) {
+    return calendar ? { ...settings, calendar: { days: calendar.days, hours: calendar.hours } } : settings;
+  }
+
+  function formatISO(iso) {
+    const date = Plan.parseISO(iso);
+    return date ? Plan.formatES(date) : "";
+  }
+
+  function renderCalendar() {
+    const loaded = Boolean(calendar);
+    els.calPick.hidden = loaded;
+    els.calLoaded.hidden = !loaded;
+    els.weekNote.hidden = !loaded;
+    if (!loaded) {
+      els.calTypes.replaceChildren();
+      return;
+    }
+    els.calRange.textContent = `${formatISO(calendar.firstWork)} – ${formatISO(calendar.lastWork)}`;
+    const fragment = document.createDocumentFragment();
+    for (const kind of Cal.WORK_KINDS) {
+      const count = calendar.counts[kind];
+      if (!count) continue;
+      const row = document.createElement("label");
+      row.className = "cal-type";
+      row.innerHTML = `
+        <span class="swatch" style="background:${Cal.SWATCH[kind]}"></span>
+        <span class="cal-type-name">${KIND_LABEL[kind]}</span>
+        <span class="cal-type-count">${dias(count)}</span>
+        <span class="cal-type-hours"><input type="number" min="0" max="24" step="0.5" data-kind="${kind}" aria-label="Horas en empresa, ${KIND_LABEL[kind]}" /> h</span>
+      `;
+      row.querySelector("input").value = calendar.hours[kind];
+      fragment.appendChild(row);
+    }
+    els.calTypes.replaceChildren(fragment);
+    const off = [];
+    if (calendar.counts.festivo) {
+      off.push(`<span class="swatch" style="background:${Cal.SWATCH.festivo}"></span> ${calendar.counts.festivo} festivos`);
+    }
+    if (calendar.counts.vacaciones) {
+      off.push(`<span class="swatch" style="background:${Cal.SWATCH.vacaciones}"></span> ${dias(calendar.counts.vacaciones)} de vacaciones`);
+    }
+    els.calOff.innerHTML = off.length ? `${off.join(" · ")} <span class="cal-off-note">se saltan</span>` : "";
+  }
+
+  async function onCalendarFile(file) {
+    if (!file || !Cal) return;
+    els.calError.textContent = "";
+    els.calPick.disabled = true;
+    els.calPickLabel.textContent = "Leyendo el calendario…";
+    try {
+      const result = await Cal.readCalendar(file);
+      calendar = { ...result, hours: { ...Cal.DEFAULT_HOURS } };
+      renderCalendar();
+      onStructureChange();
+    } catch (error) {
+      els.calError.textContent = (error && error.message) || "No he podido leer el calendario.";
+    } finally {
+      els.calFile.value = "";
+      els.calPick.disabled = false;
+      els.calPickLabel.textContent = "Usar mi calendario FP Dual";
+    }
+  }
+
+  function onCalendarHours(event) {
+    const input = event.target.closest("input[data-kind]");
+    if (!input || !calendar) return;
+    calendar.hours[input.dataset.kind] = input.value.trim() || "0";
+    onStructureChange();
+  }
+
+  function onCalendarRemove() {
+    calendar = null;
+    els.calError.textContent = "";
+    renderCalendar();
+    onStructureChange();
+  }
+
+  function onCalendarContract() {
+    if (!calendar) return;
+    const today = Plan.todayISO();
+    els.start.value = calendar.firstWork;
+    els.end.value = calendar.lastWork < today ? calendar.lastWork : today;
+    onStructureChange();
+  }
+
+  function bindCalendar() {
+    if (!Cal) {
+      $("cal-box").hidden = true;
+      return;
+    }
+    els.calPick.addEventListener("click", () => els.calFile.click());
+    els.calFile.addEventListener("change", () => onCalendarFile(els.calFile.files[0]));
+    els.calPick.addEventListener("dragover", (event) => {
+      event.preventDefault();
+      els.calPick.classList.add("is-drag");
+    });
+    els.calPick.addEventListener("dragleave", () => els.calPick.classList.remove("is-drag"));
+    els.calPick.addEventListener("drop", (event) => {
+      event.preventDefault();
+      els.calPick.classList.remove("is-drag");
+      onCalendarFile(event.dataTransfer.files[0]);
+    });
+    els.calTypes.addEventListener("input", onCalendarHours);
+    $("cal-remove").addEventListener("click", onCalendarRemove);
+    $("cal-contract").addEventListener("click", onCalendarContract);
+  }
+
+  function onMinimize() {
+    const min = host.classList.toggle("is-min");
+    els.minimize.setAttribute("aria-expanded", min ? "false" : "true");
+    els.minimize.setAttribute("aria-label", min ? "Expandir" : "Minimizar");
+    els.minimize.title = min ? "Expandir" : "Minimizar";
   }
 
   function onPaste() {
@@ -452,10 +665,6 @@
       updateSummary();
       persist();
     });
-    els.comma.addEventListener("change", () => {
-      updateSummary();
-      persist();
-    });
     for (const el of [els.descripcion, els.observaciones, els.dificultades, els.pause]) {
       el.addEventListener("input", () => {
         updateSummary();
@@ -467,6 +676,10 @@
     $("apply-paste").addEventListener("click", onPaste);
     $("reset-hours").addEventListener("click", onResetHours);
     $("close").addEventListener("click", () => hide());
+    els.minimize.addEventListener("click", onMinimize);
+    els.presets.addEventListener("click", onPreset);
+    els.tokens.addEventListener("click", onToken);
+    bindCalendar();
     els.check.addEventListener("click", () => onCheck().catch(() => {}));
     els.fill.addEventListener("click", () => onFill().catch(() => {}));
     els.stop.addEventListener("click", () => onStop().catch(() => {}));
@@ -486,21 +699,65 @@
     return `
       <div class="sheet">
         <header class="top">
-          <div>
-            <h1>Cuaderno Dual</h1>
-            <p>Rellena el desarrollo en esta misma página.</p>
+          <div class="brand">
+            <span class="logo">${ICONS.logo}</span>
+            <div>
+              <h1>Cuaderno Dual</h1>
+              <p class="sub">Rellena el seguimiento en esta página</p>
+            </div>
           </div>
-          <button id="close" type="button" aria-label="Cerrar">×</button>
+          <span id="status-chip" class="chip">Listo</span>
+          <button id="minimize" type="button" class="icon-btn" aria-label="Minimizar" title="Minimizar" aria-expanded="true">${ICONS.collapse}</button>
+          <button id="close" type="button" class="icon-btn" aria-label="Cerrar" title="Cerrar">${ICONS.close}</button>
         </header>
+        <div class="body">
         <p id="tab-banner" class="banner" hidden></p>
-        <p id="run-banner" class="banner" role="status" aria-live="polite" hidden></p>
-        <div id="progress-wrap" class="progress" hidden><div id="progress-bar"></div></div>
         <div id="editor">
           <section class="card">
+            <h2 class="step"><span class="num">1</span> Fechas</h2>
+            <div class="presets" id="presets">
+              <button type="button" class="preset" data-preset="today">Hoy</button>
+              <button type="button" class="preset" data-preset="week">Esta semana</button>
+              <button type="button" class="preset" data-preset="last-week">Semana pasada</button>
+              <button type="button" class="preset" data-preset="month">Este mes</button>
+            </div>
             <div class="dates">
               <label>Desde <input id="start" type="date" autocomplete="off" /></label>
               <label>Hasta <input id="end" type="date" autocomplete="off" /></label>
             </div>
+          </section>
+          <section class="card">
+            <div class="step-row">
+              <h2 class="step"><span class="num">2</span> Horario</h2>
+              <span id="week-total" class="pill">0 h / semana</span>
+            </div>
+            <div id="cal-box">
+              <input id="cal-file" type="file" accept="application/pdf,.pdf,image/png,image/jpeg" hidden />
+              <button id="cal-pick" type="button" class="dropzone">
+                ${ICONS.calendar}
+                <span class="dropzone-text">
+                  <strong id="cal-pick-label">Usar mi calendario FP Dual</strong>
+                  <span>PDF opcional · se lee en tu equipo y no se guarda</span>
+                </span>
+              </button>
+              <div id="cal-loaded" class="cal" hidden>
+                <div class="cal-head">
+                  <div>
+                    <strong>Calendario cargado</strong>
+                    <span id="cal-range" class="cal-range"></span>
+                  </div>
+                  <button id="cal-remove" type="button" class="text-button">Quitar</button>
+                </div>
+                <div id="cal-types" class="cal-types"></div>
+                <p id="cal-off" class="cal-off"></p>
+                <div class="cal-foot">
+                  <button id="cal-contract" type="button" class="text-button">Desde el inicio del contrato hasta hoy</button>
+                </div>
+                <p class="cal-note">Solo está en memoria: al recargar la página tendrás que subirlo otra vez.</p>
+              </div>
+              <p id="cal-error" class="hint error"></p>
+            </div>
+            <p id="week-note" class="hint week-note" hidden>Días fuera del calendario:</p>
             <div class="week" id="week">
               <label class="dow">Lun <input type="number" min="0" max="24" step="0.5" data-dow="1" autocomplete="off" /></label>
               <label class="dow">Mar <input type="number" min="0" max="24" step="0.5" data-dow="2" autocomplete="off" /></label>
@@ -510,71 +767,105 @@
               <label class="dow weekend">Sáb <input type="number" min="0" max="24" step="0.5" data-dow="6" autocomplete="off" /></label>
               <label class="dow weekend">Dom <input type="number" min="0" max="24" step="0.5" data-dow="0" autocomplete="off" /></label>
             </div>
-            <label class="check"><input id="skip-zero" type="checkbox" /> Saltar los días con 0 horas</label>
+            <label class="switch"><input id="skip-zero" type="checkbox" /> Saltar los días con 0 horas</label>
           </section>
           <section class="card">
+            <h2 class="step"><span class="num">3</span> Descripción</h2>
             <label class="field">
-              <span class="field-label">Descripción <span id="desc-count" class="count">0/2000</span></span>
-              <textarea id="descripcion" rows="3" maxlength="2000" autocomplete="off" placeholder="Qué has hecho. {fecha}, {dia} y {horas} cambian cada día."></textarea>
+              <span class="field-label">Actividades desarrolladas <span id="desc-count" class="count">0/2000</span></span>
+              <textarea id="descripcion" rows="3" maxlength="2000" autocomplete="off" placeholder="Qué has hecho. Las etiquetas de abajo cambian cada día."></textarea>
             </label>
-            <label class="field">
-              <span class="field-label">Observaciones <span id="obs-count" class="count">0/2000</span></span>
-              <textarea id="observaciones" rows="2" maxlength="2000" autocomplete="off" placeholder="Opcional"></textarea>
-            </label>
-            <label class="field">
-              <span class="field-label">Dificultades <span id="dif-count" class="count">0/2000</span></span>
-              <textarea id="dificultades" rows="2" maxlength="2000" autocomplete="off" placeholder="Opcional"></textarea>
-            </label>
+            <div class="tokens" id="tokens">
+              Insertar
+              <button type="button" class="token" data-token="{fecha}">{fecha}</button>
+              <button type="button" class="token" data-token="{dia}">{dia}</button>
+              <button type="button" class="token" data-token="{horas}">{horas}</button>
+            </div>
+            <details id="extra-text" class="sub-details">
+              <summary>Observaciones y dificultades <span class="opt">opcional</span></summary>
+              <label class="field">
+                <span class="field-label">Observaciones <span id="obs-count" class="count">0/2000</span></span>
+                <textarea id="observaciones" rows="2" maxlength="2000" autocomplete="off" placeholder="Opcional"></textarea>
+              </label>
+              <label class="field">
+                <span class="field-label">Dificultades <span id="dif-count" class="count">0/2000</span></span>
+                <textarea id="dificultades" rows="2" maxlength="2000" autocomplete="off" placeholder="Opcional"></textarea>
+              </label>
+            </details>
           </section>
           <section class="card">
-            <div class="summary-row">
-              <p id="summary" class="summary">Sin días</p>
+            <div class="step-row">
+              <h2 class="step"><span class="num">4</span> Revisar días</h2>
               <button id="reset-hours" type="button" class="text-button">Restablecer horas</button>
             </div>
-            <p id="plan-hint" class="hint"></p>
-            <details id="day-details">
-              <summary>Horas y texto de cada día</summary>
+            <p id="plan-hint" class="hint error"></p>
+            <details id="day-details" class="sub-details plain">
+              <summary>Horas y texto de cada día <span id="day-count" class="opt"></span></summary>
               <div id="days" class="days"></div>
-              <label class="field paste-field">Pegar horas
-                <textarea id="paste" rows="3" autocomplete="off" placeholder="10/11/2026 8&#10;11/11/2026 6,5"></textarea>
-              </label>
+            </details>
+          </section>
+          <details class="card advanced">
+            <summary>Ajustes avanzados</summary>
+            <label class="more">Pausa entre días (segundos) <input id="pause" type="number" min="0.4" max="10" step="0.1" autocomplete="off" /></label>
+            <label class="field paste-field">Pegar horas por día
+              <textarea id="paste" rows="3" autocomplete="off" placeholder="10/11/2026 8&#10;11/11/2026 6,5"></textarea>
+            </label>
+            <div class="paste-row">
               <button id="apply-paste" type="button" class="secondary">Aplicar horas pegadas</button>
               <p id="paste-result" class="hint"></p>
-            </details>
-            <label class="more">Pausa entre días (segundos) <input id="pause" type="number" min="0.4" max="10" step="0.1" autocomplete="off" /></label>
-            <label class="check"><input id="comma" type="checkbox" /> Enviar los decimales con coma (7,5)</label>
-          </section>
+            </div>
+          </details>
+        </div>
         </div>
         <footer class="actions">
-          <div id="run-actions" class="run-actions" hidden>
+          <p id="run-banner" class="banner" role="status" aria-live="polite" hidden></p>
+          <div id="progress-wrap" class="progress-card" hidden>
+            <div class="progress-head">
+              <span id="progress-label" aria-live="polite">Guardando</span>
+              <span id="progress-count" class="progress-count">0 / 0</span>
+            </div>
+            <div class="progress"><div id="progress-bar"></div></div>
+          </div>
+          <div id="summary-box" class="summary-box">
+            <p id="summary" class="summary">Sin días</p>
+            <p id="summary-sub" class="summary-sub"></p>
+          </div>
+          <div id="run-actions" hidden>
             <button id="resume" type="button" class="primary">Continuar</button>
             <button id="skip" type="button" class="secondary">Saltar este día</button>
             <button id="stop" type="button" class="secondary">Parar</button>
             <button id="edit" type="button" class="text-button">Editar el plan</button>
           </div>
           <div id="idle-actions">
-            <button id="check" type="button" class="secondary">Comprobar esta página</button>
+            <button id="check" type="button" class="secondary">Comprobar página</button>
             <button id="fill" type="button" class="primary">Rellenar días</button>
           </div>
-          <p class="fine">Elige el intervalo y pulsa Rellenar. Se escribe en el formulario de esta página y se pulsa Nueva por cada día, sin abrir otra ventana. Déjala abierta hasta que termine.</p>
+          <p class="fine">Se rellena el formulario de esta página día a día. Déjala abierta hasta que termine.</p>
         </footer>
       </div>
     `;
   }
 
   async function applyCss() {
+    const fallback =
+      ":host{all:initial;position:fixed;top:12px;right:12px;z-index:2147483646;width:392px;display:block;font:13px/1.45 Segoe UI,system-ui,sans-serif;color:#202734;background:#fff} :host(.is-hidden){display:none !important} [hidden]{display:none !important}";
     const style = document.createElement("style");
-    style.textContent = ":host{all:initial;position:fixed;top:12px;right:12px;z-index:2147483646;width:380px;display:block;font:13px/1.4 Segoe UI,sans-serif;color:#241c18} :host(.is-hidden){display:none !important}";
+    // Oculto hasta tener el CSS: así las transiciones no arrancan desde el estilo del navegador.
+    style.textContent = `${fallback} .sheet{display:none}`;
     shadow.appendChild(style);
     try {
-      if (!chrome.runtime?.getURL) return;
-      const response = await fetch(chrome.runtime.getURL("panel/panel.css"));
-      if (!response.ok) return;
-      const css = await response.text();
-      if (css.includes(":host")) style.textContent = css;
+      if (chrome.runtime?.getURL) {
+        const response = await fetch(chrome.runtime.getURL("panel/panel.css"));
+        const css = response.ok ? await response.text() : "";
+        if (css.includes(":host")) {
+          style.textContent = css;
+          return;
+        }
+      }
     } catch (error) {
       // Si el CSS no carga, el panel sigue en la página con el estilo mínimo.
     }
+    style.textContent = fallback;
   }
 
   function cacheElements() {
@@ -595,7 +886,6 @@
       paste: $("paste"),
       pasteResult: $("paste-result"),
       pause: $("pause"),
-      comma: $("comma"),
       tabBanner: $("tab-banner"),
       runBanner: $("run-banner"),
       progressWrap: $("progress-wrap"),
@@ -608,6 +898,27 @@
       edit: $("edit"),
       idleActions: $("idle-actions"),
       runActions: $("run-actions"),
+      chip: $("status-chip"),
+      minimize: $("minimize"),
+      presets: $("presets"),
+      tokens: $("tokens"),
+      extraText: $("extra-text"),
+      weekTotal: $("week-total"),
+      dayCount: $("day-count"),
+      resetHours: $("reset-hours"),
+      summarySub: $("summary-sub"),
+      summaryBox: $("summary-box"),
+      progressLabel: $("progress-label"),
+      progressCount: $("progress-count"),
+      calFile: $("cal-file"),
+      calPick: $("cal-pick"),
+      calPickLabel: $("cal-pick-label"),
+      calLoaded: $("cal-loaded"),
+      calRange: $("cal-range"),
+      calTypes: $("cal-types"),
+      calOff: $("cal-off"),
+      calError: $("cal-error"),
+      weekNote: $("week-note"),
     };
   }
 

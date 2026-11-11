@@ -89,7 +89,7 @@
       end: today,
       hoursByWeekday: ["0", "8", "8", "8", "8", "8", "0"],
       skipZero: true,
-      commaDecimals: true,
+      commaDecimals: false,
       descripcion: "",
       observaciones: "",
       dificultades: "",
@@ -117,18 +117,22 @@
     const hoursByWeekday = settings.hoursByWeekday || [];
     const hourOverrides = settings.hourOverrides || {};
     const textOverrides = settings.textOverrides || {};
+    const calendarDays = settings.calendar?.days || {};
+    const calendarHours = settings.calendar?.hours || {};
     const entries = [];
 
     for (let cursor = new Date(start); cursor <= end; cursor.setDate(cursor.getDate() + 1)) {
       const iso = toISO(cursor);
       const dow = cursor.getDay();
-      const weekdayHours = hoursByWeekday[dow] ?? "0";
-      const raw = Object.prototype.hasOwnProperty.call(hourOverrides, iso)
-        ? hourOverrides[iso]
-        : weekdayHours;
+      const calKind = calendarDays[iso] || "";
+      const overridden = Object.prototype.hasOwnProperty.call(hourOverrides, iso);
+      let raw = hoursByWeekday[dow] ?? "0";
+      if (overridden) raw = hourOverrides[iso];
+      else if (calKind) raw = calendarHours[calKind] ?? "0";
       const hoursNum = parseHours(raw);
       const horas = formatHours(raw, settings.commaDecimals);
-      const skipped = settings.skipZero !== false && !(hoursNum > 0);
+      const dayOff = !overridden && (calKind === "festivo" || calKind === "vacaciones");
+      const skipped = dayOff || (settings.skipZero !== false && !(hoursNum > 0));
       const base = {
         iso,
         fecha: formatES(cursor),
@@ -138,6 +142,7 @@
         horas,
         hoursNum,
         skipped,
+        calKind,
       };
       const customText = String(textOverrides[iso] || "").trim();
       entries.push({

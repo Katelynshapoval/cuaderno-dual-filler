@@ -57,6 +57,36 @@ test("requires a description and rejects an inverted range", () => {
   assert.match(inverted.errors[0], /posterior/i);
 });
 
+test("uses calendar hours by day type and always skips festivos and vacaciones", () => {
+  const plan = buildPlan({
+    ...defaultSettings(new Date(2026, 9, 1)),
+    start: "2026-10-12",
+    end: "2026-10-16",
+    descripcion: "Trabajo",
+    skipZero: false,
+    hourOverrides: { "2026-10-14": "2" },
+    calendar: {
+      days: {
+        "2026-10-12": "festivo",
+        "2026-10-13": "vacaciones",
+        "2026-10-14": "vacaciones",
+        "2026-10-15": "t2",
+        "2026-10-16": "t4",
+      },
+      hours: { t1: "4", t2: "8", t3: "7", t4: "3" },
+    },
+  });
+
+  assert.deepEqual(
+    plan.submittable.map((entry) => `${entry.fecha} ${entry.horas}`),
+    ["14/10/2026 2", "15/10/2026 8", "16/10/2026 3"]
+  );
+  assert.deepEqual(
+    plan.entries.filter((entry) => entry.skipped).map((entry) => entry.calKind),
+    ["festivo", "vacaciones"]
+  );
+});
+
 test("parses pasted dates and hours", () => {
   const parsed = parseHoursPaste(`
     10/11/2026 8

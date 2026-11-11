@@ -9,23 +9,23 @@ function enqueue(task) {
 
 function badgeFor(run) {
   if (!run || run.status === "idle") {
-    return { text: "", color: "#7e2b20", title: "Cuaderno Dual" };
+    return { text: "", color: "#36415a", title: "Cuaderno Dual" };
   }
   if (run.status === "error") {
-    return { text: "!", color: "#9f2d24", title: run.error || "El rellenado se ha detenido" };
+    return { text: "!", color: "#c2362f", title: run.error || "El rellenado se ha detenido" };
   }
   if (run.status === "paused") {
     const left = Math.max((run.entries?.length || 0) - (run.index || 0), 0);
-    return { text: String(left), color: "#8a5a12", title: `${left} días restantes, en pausa` };
+    return { text: String(left), color: "#b7791f", title: `${left} días restantes, en pausa` };
   }
   if (run.status === "done") {
-    return { text: "OK", color: "#2f6b4f", title: "Días guardados" };
+    return { text: "OK", color: "#4c7a2c", title: "Días guardados" };
   }
   const left = Math.max((run.entries?.length || 0) - (run.index || 0), 0);
   const current = run.entries?.[run.index]?.fecha || "";
   return {
     text: String(left),
-    color: "#9f2d24",
+    color: "#36415a",
     title: current ? `${left} restantes · guardando ${current}` : `${left} días restantes`,
   };
 }
@@ -61,7 +61,7 @@ chrome.action.onClicked.addListener(async (tab) => {
   } catch (error) {
     await chrome.scripting.executeScript({
       target: { tabId: tab.id },
-      files: ["shared/plan.js", "panel/panel.js", "content/content.js"],
+      files: ["shared/plan.js", "shared/calendar.js", "panel/panel.js", "content/content.js"],
     });
     await chrome.tabs.sendMessage(tab.id, { type: "TOGGLE_PANEL" });
   }

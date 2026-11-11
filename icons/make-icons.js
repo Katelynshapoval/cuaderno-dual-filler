@@ -54,10 +54,10 @@ function pixel(x, y, size) {
   const dy = Math.max(Math.abs(ny - 0.5) - 0.5 + radius, 0);
   if (dx * dx + dy * dy > radius * radius) return [0, 0, 0, 0];
   const page = nx > 0.24 && nx < 0.76 && ny > 0.2 && ny < 0.8;
-  if (!page) return [163, 59, 43, 255];
+  if (!page) return [32, 39, 52, 255];
   const line = (top) => ny > top && ny < top + 0.05 && nx > 0.34 && nx < 0.66;
-  if (line(0.34) || line(0.48) || line(0.62)) return [163, 59, 43, 255];
-  return [255, 253, 249, 255];
+  if (line(0.34) || line(0.48) || line(0.62)) return [54, 65, 90, 255];
+  return [183, 216, 148, 255];
 }
 
 const dir = __dirname;
