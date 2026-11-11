@@ -855,7 +855,6 @@ button:disabled { cursor: not-allowed; opacity: 0.5; }
 #run-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 #run-actions .primary, #run-actions .secondary { flex: 1 1 0; }
 #edit { flex-basis: 100%; }
-
 .actions .primary, .actions .secondary { white-space: nowrap; }
 
 .fine { display: none; margin: 0; font-size: 11px; color: var(--muted); text-align: center; }

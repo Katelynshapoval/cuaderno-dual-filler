@@ -196,6 +196,7 @@
           await CuadernoFill.kick();
           if (savedRows.length !== before) throw new Error("days already on the page were submitted again");
           if (store.run.status !== "done") throw new Error(`skip rerun status ${store.run.status}`);
+          if (!store.run.entries.every((entry) => entry.status === "exists")) throw new Error("kept days not marked");
 
           rejectSave = true;
           const blocked = CuadernoPlan.buildPlan({

@@ -8,6 +8,8 @@
   let bootPromise = null;
   let persistTimer = 0;
   let currentRun = { status: "idle" };
+  let doneTimer = 0;
+  const DONE_HOLD_MS = 5000;
   let installed = false;
 
   const storageArea = {
@@ -221,9 +223,10 @@
   }
 
   function renderRun(run) {
+    clearTimeout(doneTimer);
     currentRun = run && run.status ? run : { status: "idle" };
     const status = currentRun.status || "idle";
-    const active = status === "running" || status === "paused" || status === "error" || status === "done";
+    const active = ["running", "paused", "error", "done"].includes(status);
     host.classList.toggle("is-locked", status !== "idle");
     els.idleActions.hidden = active;
     els.runActions.hidden = !active;
@@ -266,6 +269,14 @@
       if (existed === 1) message += " 1 ya estaba registrado y no se ha modificado.";
       else if (existed > 1) message += ` ${existed} ya estaban registrados y no se han modificado.`;
       setBanner(els.runBanner, "ok", message);
+      const finishedAt = currentRun.updatedAt;
+      doneTimer = setTimeout(() => {
+        patchRun((run) =>
+          run.status === "done" && run.updatedAt === finishedAt
+            ? { ...run, status: "idle", phase: "idle", owner: null, error: null, updatedAt: Date.now() }
+            : null
+        ).catch(() => {});
+      }, DONE_HOLD_MS);
     } else {
       setChip("", "");
       setBanner(els.runBanner, "", "");
@@ -604,8 +615,7 @@
     els.stop.addEventListener("click", () => onStop().catch(() => {}));
     els.resume.addEventListener("click", () => onResume().catch(() => {}));
     els.skip.addEventListener("click", () => onSkip().catch(() => {}));
-    els.edit.addEventListener("click", () => onEdit().catch(() => {}));
-    shadow.addEventListener(
+    els.edit.addEventListener("click", () => onEdit().catch(() => {}));    shadow.addEventListener(
       "wheel",
       (event) => {
         if (event.target.type === "number" && shadow.activeElement === event.target) event.preventDefault();

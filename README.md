@@ -4,7 +4,9 @@ Extensión de Chrome que rellena el cuaderno de seguimiento de FP Dual del porta
 
 - Puedes poner horas distintas para cada día de la semana, o subir el PDF de tu calendario FP Dual para que use las horas de cada tipo de día y se salte festivos y vacaciones.
 - En la descripción puedes usar `{fecha}`, `{dia}` y `{horas}`, que cambian en cada día.
-- Los días que ya están registrados no se tocan: si el portal pasa a **Actualizar** porque esa fecha ya existe, la extensión se salta ese día sin modificarlo, vuelve al formulario de Nueva y sigue con el siguiente. Al terminar te dice cuántos días estaban ya registrados.
+- Los días que ya están registrados no se tocan: la extensión se los salta y sigue con el siguiente.
+
+> **Importante: borra primero los días que quieras cambiar.** Si una fecha ya está registrada, el portal no deja crearla otra vez con Nueva: cambia el botón a **Actualizar** y se comporta de forma rara, así que la extensión no actualiza días existentes. Si quieres rehacer días que ya rellenaste, bórralos antes en el listado del portal (marca la casilla de un día y pulsa **Borrar**; el portal solo deja borrar de uno en uno) y luego rellénalos con la extensión.
 - Todo se hace en tu navegador: no se envía nada a ningún servidor aparte del propio portal.
 
 ## Instalación
@@ -45,6 +47,8 @@ Si Chrome muestra un aviso sobre extensiones en modo de desarrollador al abrirse
 Deja la pestaña abierta mientras se rellena: el portal recarga la página después de cada día y el panel vuelve a aparecer para enseñarte el progreso. Puedes **Parar** en cualquier momento y **Continuar** después; los días ya guardados se quedan en el portal.
 
 Si el portal rechaza un día, el panel te dice el motivo. Puedes corregirlo y pulsar **Continuar**, o **Saltar este día**.
+
+Al terminar, el panel enseña un resumen (días guardados y días que ya estaban registrados) durante unos segundos y vuelve al principio.
 
 El calendario PDF solo se guarda en memoria: si recargas la página tendrás que subirlo otra vez.
 
