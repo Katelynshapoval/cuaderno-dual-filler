@@ -67,12 +67,16 @@
     close: svg('<path d="M6 6l12 12M18 6L6 18"/>'),
     collapse: svg('<path d="M6 15l6-6 6 6"/>'),
     text: svg('<path d="M4 6h16M4 12h16M4 18h10"/>'),
+    prev: svg('<path d="M15 6l-6 6 6 6"/>'),
+    next: svg('<path d="M9 6l6 6-6 6"/>'),
     calendar: svg('<rect x="3.5" y="5" width="17" height="15.5" rx="2"/><path d="M3.5 10h17M8 3v4M16 3v4M8 14h2M14 14h2M8 17h2"/>'),
   };
   const Cal = globalThis.CuadernoCalendar;
   const KIND_LABEL = { t1: "Tipo 1", t2: "Tipo 2", t3: "Tipo 3", t4: "Tipo 4" };
   // El calendario solo vive aquí, en memoria: no se guarda en chrome.storage.
   let calendar = null;
+  let calWeekStart = null;
+  let calWeekAnchor = null;
   const NEAR_LIMIT = 1700;
 
   function dias(count) {
@@ -224,11 +228,16 @@
     els.resetHours.disabled = custom === 0;
     els.dayCount.textContent = plan.entries.length ? dias(plan.entries.length) : "";
 
-    const weekly = settings.hoursByWeekday.reduce((total, value) => {
-      const hours = Plan.parseHours(value);
-      return total + (hours > 0 ? hours : 0);
-    }, 0);
-    els.weekTotal.textContent = `${Math.round(weekly * 100) / 100} h / semana`;
+    if (calendar) {
+      const weekly = renderCalWeek(settings);
+      els.weekTotal.textContent = `${Math.round(weekly * 100) / 100} h esta semana`;
+    } else {
+      const weekly = settings.hoursByWeekday.reduce((total, value) => {
+        const hours = Plan.parseHours(value);
+        return total + (hours > 0 ? hours : 0);
+      }, 0);
+      els.weekTotal.textContent = `${Math.round(weekly * 100) / 100} h / semana`;
+    }
 
     for (const button of els.presets.querySelectorAll(".preset")) {
       const [start, end] = presetRange(button.dataset.preset);
@@ -511,6 +520,50 @@
     return calendar ? { ...settings, calendar: { days: calendar.days, hours: calendar.hours } } : settings;
   }
 
+  function mondayOf(iso) {
+    const date = Plan.parseISO(iso) || Plan.parseISO(Plan.todayISO());
+    date.setDate(date.getDate() - ((date.getDay() + 6) % 7));
+    return date;
+  }
+
+  function renderCalWeek(settings) {
+    if (settings.start !== calWeekAnchor) {
+      calWeekAnchor = settings.start;
+      calWeekStart = mondayOf(settings.start);
+    }
+    const sunday = new Date(calWeekStart);
+    sunday.setDate(calWeekStart.getDate() + 6);
+    const week = Plan.buildPlan(
+      withCalendar({ ...settings, start: Plan.toISO(calWeekStart), end: Plan.toISO(sunday) })
+    );
+    let total = 0;
+    const cells = week.entries.map((entry) => {
+      if (!entry.skipped && entry.hoursNum > 0) total += entry.hoursNum;
+      let value = `${Number.isFinite(entry.hoursNum) ? entry.hoursNum : 0} h`;
+      if (entry.calKind === "festivo") value = "Festivo";
+      else if (entry.calKind === "vacaciones") value = "Vacac.";
+      else if (entry.skipped) value = "—";
+      const inRange = entry.iso >= settings.start && entry.iso <= settings.end;
+      const dow = entry.diaCorto.charAt(0).toUpperCase() + entry.diaCorto.slice(1);
+      return `
+        <div class="cw-day${inRange ? " in-range" : ""}" data-kind="${entry.calKind}" title="${entry.dia} ${entry.fecha}">
+          <span class="cw-dow">${dow}</span>
+          <span class="cw-date">${entry.fecha.slice(0, 5)}</span>
+          <span class="cw-hours">${value}</span>
+        </div>`;
+    });
+    els.calWeekDays.innerHTML = cells.join("");
+    els.calWeekLabel.textContent = `Semana del ${Plan.formatES(calWeekStart).slice(0, 5)} al ${Plan.formatES(sunday)}`;
+    return total;
+  }
+
+  function onCalWeekShift(days) {
+    if (!calWeekStart) return;
+    calWeekStart = new Date(calWeekStart);
+    calWeekStart.setDate(calWeekStart.getDate() + days);
+    updateSummary();
+  }
+
   function formatISO(iso) {
     const date = Plan.parseISO(iso);
     return date ? Plan.formatES(date) : "";
@@ -520,7 +573,9 @@
     const loaded = Boolean(calendar);
     els.calPick.hidden = loaded;
     els.calLoaded.hidden = !loaded;
-    els.weekNote.hidden = !loaded;
+    els.calWeek.hidden = !loaded;
+    els.week.hidden = loaded;
+    calWeekAnchor = null;
     if (!loaded) {
       els.calTypes.replaceChildren();
       return;
@@ -613,6 +668,8 @@
     els.calTypes.addEventListener("input", onCalendarHours);
     $("cal-remove").addEventListener("click", onCalendarRemove);
     $("cal-contract").addEventListener("click", onCalendarContract);
+    $("cal-week-prev").addEventListener("click", () => onCalWeekShift(-7));
+    $("cal-week-next").addEventListener("click", () => onCalWeekShift(7));
   }
 
   function onMinimize() {
@@ -757,7 +814,14 @@
               </div>
               <p id="cal-error" class="hint error"></p>
             </div>
-            <p id="week-note" class="hint week-note" hidden>Días fuera del calendario:</p>
+            <div id="cal-week" class="cal-week" hidden>
+              <div class="cal-week-head">
+                <button id="cal-week-prev" type="button" class="icon-btn small" aria-label="Semana anterior" title="Semana anterior">${ICONS.prev}</button>
+                <span id="cal-week-label"></span>
+                <button id="cal-week-next" type="button" class="icon-btn small" aria-label="Semana siguiente" title="Semana siguiente">${ICONS.next}</button>
+              </div>
+              <div id="cal-week-days" class="week"></div>
+            </div>
             <div class="week" id="week">
               <label class="dow">Lun <input type="number" min="0" max="24" step="0.5" data-dow="1" autocomplete="off" /></label>
               <label class="dow">Mar <input type="number" min="0" max="24" step="0.5" data-dow="2" autocomplete="off" /></label>
@@ -918,7 +982,10 @@
       calTypes: $("cal-types"),
       calOff: $("cal-off"),
       calError: $("cal-error"),
-      weekNote: $("week-note"),
+      calWeek: $("cal-week"),
+      calWeekLabel: $("cal-week-label"),
+      calWeekDays: $("cal-week-days"),
+      week: $("week"),
     };
   }
 
