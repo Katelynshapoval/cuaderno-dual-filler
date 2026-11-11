@@ -143,13 +143,17 @@
           const desc = root.getElementById("descripcion");
           desc.value = "Apoyo en el mantenimiento";
           desc.dispatchEvent(new Event("input", { bubbles: true }));
-          const hours = root.querySelector(".day .hours");
-          hours.value = "6";
-          hours.dispatchEvent(new Event("input", { bubbles: true }));
-          const summary = root.getElementById("summary").textContent;
-          if (!summary.includes("6 h") || !summary.includes("día")) throw new Error(summary);
+          for (const hours of root.querySelectorAll("#week input")) {
+            hours.value = "6";
+            hours.dispatchEvent(new Event("input", { bubbles: true }));
+          }
+          const statHours = root.getElementById("stat-hours").textContent;
+          const statDays = root.getElementById("stat-days-label").textContent;
+          if (root.getElementById("stats").hidden || !(Number(statHours) > 0 && Number(statHours) % 6 === 0) || !statDays.startsWith("día")) {
+            throw new Error(`${statHours} ${statDays}`);
+          }
           const fill = root.getElementById("fill");
-          if (fill.disabled || !fill.textContent.startsWith("Rellenar")) throw new Error(fill.textContent);
+          if (fill.disabled || !fill.textContent.trim().startsWith("Rellenar")) throw new Error(fill.textContent);
           CuadernoPanel.hide();
 
           const detected = CuadernoFill.detectFields();
