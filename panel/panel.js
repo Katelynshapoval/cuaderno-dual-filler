@@ -1,6 +1,6 @@
 (function () {
   const Plan = globalThis.CuadernoPlan;
-  const memory = { settings: null, run: { status: "idle" }, panelOpen: false };
+  const memory = { settings: null, run: { status: "idle" } };
   const listeners = [];
   let host = null;
   let shadow = null;
@@ -259,11 +259,13 @@
     } else if (status === "done") {
       setChip("ok", "Hecho");
       els.progressLabel.textContent = "Completado";
-      setBanner(
-        els.runBanner,
-        "ok",
-        total === 1 ? "Se ha guardado 1 día." : `Se han guardado ${total} días.`
-      );
+      const entries = currentRun.entries || [];
+      const saved = entries.filter((entry) => entry.status === "done").length;
+      const existed = entries.filter((entry) => entry.status === "exists").length;
+      let message = saved === 0 ? "No se ha guardado ningún día nuevo." : saved === 1 ? "Se ha guardado 1 día." : `Se han guardado ${saved} días.`;
+      if (existed === 1) message += " 1 ya estaba registrado y no se ha modificado.";
+      else if (existed > 1) message += ` ${existed} ya estaban registrados y no se han modificado.`;
+      setBanner(els.runBanner, "ok", message);
     } else {
       setChip("", "");
       setBanner(els.runBanner, "", "");
@@ -859,13 +861,11 @@
     if (window !== window.top) return Promise.resolve();
     const pending = host ? bootPromise : create();
     host.classList.remove("is-hidden");
-    storageSet({ panelOpen: true }).catch(() => {});
     return pending;
   }
 
   function hide() {
     if (host) host.classList.add("is-hidden");
-    storageSet({ panelOpen: false }).catch(() => {});
   }
 
   function toggle() {
@@ -884,10 +884,10 @@
       toggle();
       sendResponse({ ok: true });
     });
-    Promise.all([storageGet("panelOpen"), storageGet("run")])
-      .then(([open, run]) => {
-        const active = run && run.status && run.status !== "idle";
-        if (open || active) return show();
+    // Solo se abre sola a mitad de un rellenado: el portal recarga la página tras cada día.
+    Promise.all([storageGet("run"), currentTabId()])
+      .then(([run, tabId]) => {
+        if (run && run.status === "running" && (run.tabId == null || run.tabId === tabId)) return show();
         return null;
       })
       .catch(() => {});

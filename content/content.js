@@ -358,14 +358,11 @@
     const own = new Set(
       [fields.fecha, fields.horas, fields.descripcion, fields.observaciones, fields.dificultades].filter(Boolean)
     );
-    const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
-    while (walker.nextNode()) {
-      const node = walker.currentNode;
-      if (!pattern.test(node.nodeValue || "")) continue;
-      const el = node.parentElement;
-      if (!el || el.closest("script, style, noscript, textarea, input")) continue;
-      if (formRow && formRow.contains(el)) continue;
-      const row = el.closest("tr");
+    for (const cell of document.querySelectorAll("td")) {
+      const text = (cell.textContent || "").replace(/\u00a0/g, " ").trim();
+      if (!text || text.length > 10 || !pattern.test(text)) continue;
+      if (formRow && formRow.contains(cell)) continue;
+      const row = cell.closest("tr");
       if (formRow && row && !isAfter(row, formRow)) continue;
       return true;
     }
@@ -388,26 +385,21 @@
     return !fecha && !datesMatch(fields.fecha.value, entry.fecha);
   }
 
+  function lastAlert() {
+    return document.documentElement.dataset.cuadernoAlert || "";
+  }
+
+  function clearAlert() {
+    delete document.documentElement.dataset.cuadernoAlert;
+  }
+
   function installDialogHooks() {
-    if (window.__cuadernoHooked) return;
-    window.__cuadernoHooked = true;
-    window.__cuadernoOriginalAlert = window.alert;
-    window.__cuadernoOriginalConfirm = window.confirm;
-    window.__cuadernoLastAlert = "";
-    window.alert = function (message) {
-      window.__cuadernoLastAlert = String(message ?? "");
-    };
-    window.confirm = function (message) {
-      window.__cuadernoLastConfirm = String(message ?? "");
-      return true;
-    };
+    clearAlert();
+    document.documentElement.dataset.cuadernoHook = "1";
   }
 
   function removeDialogHooks() {
-    if (!window.__cuadernoHooked) return;
-    window.alert = window.__cuadernoOriginalAlert;
-    window.confirm = window.__cuadernoOriginalConfirm;
-    window.__cuadernoHooked = false;
+    delete document.documentElement.dataset.cuadernoHook;
   }
 
   async function patchError(message) {
@@ -426,12 +418,12 @@
     });
   }
 
-  async function markDoneAndAdvance(expectedIndex) {
+  async function markDoneAndAdvance(expectedIndex, status = "done") {
     const run = await storageGet("run");
     if (!run || run.index !== expectedIndex) return false;
     if (run.status !== "running" && run.status !== "paused") return false;
     const entries = run.entries.map((entry, index) =>
-      index === expectedIndex ? { ...entry, status: "done" } : entry
+      index === expectedIndex ? { ...entry, status } : entry
     );
     const finished = expectedIndex + 1 >= entries.length;
     await storageSet({
@@ -444,11 +436,52 @@
         owner: null,
         ownerIndex: null,
         submittingFecha: null,
+        resets: 0,
         error: null,
         updatedAt: Date.now(),
       },
     });
     return true;
+  }
+
+  // Con un día ya registrado el portal vuelve en modo edición: Nueva pasa a ser Actualizar,
+  // que sobrescribiría ese día. Nunca se pulsa.
+  function updateButton() {
+    return (
+      [...document.querySelectorAll("button, input[type='button'], input[type='submit'], a")].find((el) => {
+        const code = el.getAttribute("onclick") || el.getAttribute("href") || "";
+        const text = norm(el.innerText || el.value || "");
+        return (/\bactualizar\s*\(/.test(code) || text === "actualizar") && isVisible(el);
+      }) || null
+    );
+  }
+
+  const UPDATE_STUCK =
+    "El portal se ha quedado en modo Actualizar. Pulsa Volver, entra otra vez en Desarrollo y luego pulsa Continuar.";
+
+  // Devuelve null si la página también tiene Nueva y se puede seguir rellenando aquí.
+  async function handleUpdateMode(run, index, entry) {
+    const fecha = document.getElementById("FECHA");
+    const justSent = run.phase === "submitting" && run.submittingFecha === entry.fecha;
+    if (justSent || (fecha && datesMatch(fecha.value, entry.fecha))) {
+      await markDoneAndAdvance(index, "exists");
+      return true;
+    }
+    if (detectPortalFields()) return null;
+
+    const fresh = await storageGet("run");
+    if (!fresh || fresh.status !== "running" || fresh.index !== index) return false;
+    if ((fresh.resets || 0) >= 2) {
+      await patchError(UPDATE_STUCK);
+      return false;
+    }
+    await storageSet({
+      run: { ...fresh, resets: (fresh.resets || 0) + 1, phase: "idle", owner: null, updatedAt: Date.now() },
+    });
+    document.dispatchEvent(new CustomEvent("cuaderno-reset-form"));
+    await sleep(6000);
+    if (!pageUnloading) await patchError(UPDATE_STUCK);
+    return false;
   }
 
   async function claimDay(index) {
@@ -462,7 +495,7 @@
     while (Date.now() - started < timeout) {
       if (pageUnloading) return "unloaded";
       if (dateAlreadyListed(entry.fecha, fields)) return "saved";
-      const alertText = window.__cuadernoLastAlert || "";
+      const alertText = lastAlert();
       if (alertText && isBenignAlert(alertText) && formCleared(fields, entry)) return "saved";
       if (alertText && !isBenignAlert(alertText)) return "alert";
       await sleep(200);
@@ -529,6 +562,10 @@
 
     const index = run.index;
     const entry = run.entries[index];
+    if (window === window.top && updateButton()) {
+      const handled = await handleUpdateMode(run, index, entry);
+      if (handled !== null) return handled;
+    }
     let detected = await detectSoon();
     if (!detected || !detected.ok) {
       if (window !== window.top) return false;
@@ -545,7 +582,7 @@
     }
 
     if (dateAlreadyListed(entry.fecha, detected.fields)) {
-      await markDoneAndAdvance(index);
+      await markDoneAndAdvance(index, "exists");
       claimMisses = 0;
       return true;
     }
@@ -578,11 +615,11 @@
     }
     const current = run.entries[run.index];
     if (dateAlreadyListed(current.fecha, detected.fields)) {
-      await markDoneAndAdvance(run.index);
+      await markDoneAndAdvance(run.index, "exists");
       return true;
     }
 
-    window.__cuadernoLastAlert = "";
+    clearAlert();
     setControlValue(detected.fields.fecha, current.fecha);
     // El portal valida las horas con isNaN(): "7,5" lo rechaza, "7.5" no.
     setControlValue(detected.fields.horas, String(current.horas).replace(",", "."));
@@ -628,7 +665,7 @@
       return true;
     }
     if (outcome === "alert") {
-      await patchError(window.__cuadernoLastAlert || "La página ha rechazado este día.");
+      await patchError(lastAlert() || "La página ha rechazado este día.");
       return false;
     }
     await patchError(
@@ -661,40 +698,6 @@
     return loopPromise;
   }
 
-  const painted = [];
-
-  function paint(el, color) {
-    if (!el) return;
-    el.dataset.cuadernoOutline = el.style.outline;
-    el.style.outline = `2px solid ${color}`;
-    el.style.outlineOffset = "2px";
-    painted.push(el);
-  }
-
-  function clearPaint() {
-    for (const el of painted) {
-      el.style.outline = el.dataset.cuadernoOutline || "";
-      delete el.dataset.cuadernoOutline;
-    }
-    painted.length = 0;
-  }
-
-  function inspect(highlight) {
-    const detected = detectFields();
-    if (highlight && detected.ok) {
-      clearPaint();
-      paint(detected.fields.fecha, "#a33b2b");
-      paint(detected.fields.horas, "#a33b2b");
-      paint(detected.fields.descripcion, "#245c45");
-      paint(detected.fields.observaciones, "#245c45");
-      paint(detected.fields.dificultades, "#245c45");
-      paint(detected.fields.nueva, "#1d4e89");
-      detected.fields.fecha.scrollIntoView({ block: "center", inline: "nearest" });
-      setTimeout(clearPaint, 4000);
-    }
-    return { ok: detected.ok, error: detected.error, summary: detected.summary };
-  }
-
   window.addEventListener("pagehide", () => {
     pageUnloading = true;
     sendMessage({ type: "RELEASE", frame: frameId });
@@ -702,7 +705,6 @@
 
   globalThis.CuadernoFill = {
     detectFields,
-    inspect,
     kick,
     dateAlreadyListed,
     setControlValue,

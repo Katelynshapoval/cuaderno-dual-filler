@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Cuaderno Dual",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Rellena el cuaderno de seguimiento desde una fecha hasta hoy, con tus horas y tu texto.",
   "permissions": ["storage", "activeTab", "scripting"],
   "host_permissions": ["https://aplicaciones.aragon.es/*"],
@@ -17,6 +17,13 @@
     "service_worker": "background/service-worker.js"
   },
   "content_scripts": [
+    {
+      "matches": ["https://aplicaciones.aragon.es/*"],
+      "js": ["content/page-hooks.js"],
+      "run_at": "document_start",
+      "all_frames": true,
+      "world": "MAIN"
+    },
     {
       "matches": ["https://aplicaciones.aragon.es/*"],
       "js": ["shared/plan.js", "shared/calendar.js", "panel/panel.js", "content/content.js"],

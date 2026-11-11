@@ -72,6 +72,12 @@
         if (!/^\d{2}\/\d{2}\/\d{4}$/.test(fecha)) return alert("El formato de la fecha no es válido");
         if (isNaN(horas) || Number(horas) == 0) return alert("El formato para las horas no es válido");
         const saved = read("saved", []);
+        write("reloads", read("reloads", 0) + 1);
+        // Como el portal: si la fecha ya existe, vuelve con ese día cargado en modo Actualizar.
+        if (saved.some((row) => row.fecha === fecha)) {
+          write("mode", { fecha });
+          return location.reload();
+        }
         saved.push({
           fecha,
           horas,
@@ -81,8 +87,30 @@
         });
         saved.sort((a, b) => a.fecha.split("/").reverse().join("").localeCompare(b.fecha.split("/").reverse().join("")));
         write("saved", saved);
-        write("reloads", read("reloads", 0) + 1);
         location.reload();
+      }
+
+      function actualizar() {
+        write("overwritten", read("overwritten", 0) + 1);
+        write("mode", null);
+        location.reload();
+      }
+
+      function paginar() {
+        write("mode", null);
+        write("paginated", read("paginated", 0) + 1);
+        location.reload();
+      }
+
+      const mode = read("mode", null);
+      if (mode) {
+        const row = read("saved", []).find((item) => item.fecha === mode.fecha);
+        document.getElementById("FECHA").value = mode.fecha;
+        document.getElementById("descripcion").value = row ? row.descripcion : "";
+        const button = document.getElementById("593804895");
+        button.value = "actualizar";
+        button.setAttribute("onclick", "javascript: actualizar()");
+        button.textContent = "Actualizar";
       }
 
       const listado = document.getElementById("listado");
@@ -122,6 +150,12 @@
 
       if (!sessionStorage.getItem("started")) {
         sessionStorage.setItem("started", "1");
+        // 10/11 ya está registrado pero fuera de la primera página del listado.
+        write("saved", [
+          { fecha: "01/11/2026", horas: "4", descripcion: "Antes", observaciones: "", dificultades: "" },
+          { fecha: "02/11/2026", horas: "4", descripcion: "Antes", observaciones: "", dificultades: "" },
+          { fecha: "10/11/2026", horas: "6", descripcion: "Ya estaba", observaciones: "", dificultades: "" },
+        ]);
         const entries = [
           ["09/11/2026", "8"],
           ["10/11/2026", "7,5"],
@@ -137,6 +171,7 @@
         write("store:run", { status: "running", index: 0, pauseMs: 0, phase: "idle", tabId: 1, entries });
       }
     </script>
+    <script src="../content/page-hooks.js"></script>
     <script src="../content/content.js"></script>
     <script>
       function check() {
@@ -144,11 +179,13 @@
         if (run.status === "running") return setTimeout(check, 200);
         const saved = read("saved", []);
         const got = saved.map((row) => `${row.fecha} ${row.horas}`).join(", ");
-        const want = "09/11/2026 8, 10/11/2026 7.5, 11/11/2026 3";
-        const ok = run.status === "done" && got === want;
+        const want = "01/11/2026 4, 02/11/2026 4, 09/11/2026 8, 10/11/2026 6, 11/11/2026 3";
+        const statuses = (run.entries || []).map((entry) => entry.status).join(",");
+        const overwritten = read("overwritten", 0);
+        const ok = run.status === "done" && got === want && statuses === "done,exists,done" && overwritten === 0;
         document.getElementById("result").textContent = ok
           ? "PASS"
-          : `FAIL: status ${run.status} ${run.error || ""} | saved ${got}`;
+          : `FAIL: status ${run.status} ${run.error || ""} | saved ${got} | entries ${statuses} | overwritten ${overwritten}`;
         document.title = ok ? "PASS" : "FAIL";
       }
       setTimeout(check, 200);

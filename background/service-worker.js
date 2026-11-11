@@ -54,17 +54,59 @@ chrome.storage.onChanged.addListener((changes, area) => {
   if (area === "local" && changes.run) refreshBadge();
 });
 
-chrome.action.onClicked.addListener(async (tab) => {
-  if (!tab.id || !tab.url || !tab.url.startsWith("https://aplicaciones.aragon.es/")) return;
+const PORTAL = "https://aplicaciones.aragon.es/";
+
+function isPortal(url) {
+  return Boolean(url && url.startsWith(PORTAL));
+}
+
+// Fuera del portal el clic no tiene nada que abrir: se enseña un aviso en su lugar.
+// Ese popup queda fijado a la pestaña hasta que vuelva al portal (ver tabs.onUpdated).
+async function showNotice(tabId, reason) {
+  const popup = reason ? `popup/popup.html?motivo=${reason}` : "popup/popup.html";
+  await chrome.action.setPopup({ tabId, popup });
   try {
-    await chrome.tabs.sendMessage(tab.id, { type: "TOGGLE_PANEL" });
+    await chrome.action.openPopup();
   } catch (error) {
-    await chrome.scripting.executeScript({
-      target: { tabId: tab.id },
-      files: ["shared/plan.js", "shared/calendar.js", "panel/panel.js", "content/content.js"],
-    });
-    await chrome.tabs.sendMessage(tab.id, { type: "TOGGLE_PANEL" });
+    // Chrome antiguo: el aviso saldrá en el siguiente clic.
   }
+  if (reason) await chrome.action.setPopup({ tabId, popup: "" });
+}
+
+async function togglePanel(tabId) {
+  try {
+    await chrome.tabs.sendMessage(tabId, { type: "TOGGLE_PANEL" });
+    return;
+  } catch (error) {
+    // Pestaña abierta antes de instalar o recargar la extensión: no tiene los scripts.
+  }
+  await chrome.scripting.executeScript({
+    target: { tabId },
+    files: ["content/page-hooks.js"],
+    world: "MAIN",
+  });
+  await chrome.scripting.executeScript({
+    target: { tabId },
+    files: ["shared/plan.js", "shared/calendar.js", "panel/panel.js", "content/content.js"],
+  });
+  await chrome.tabs.sendMessage(tabId, { type: "TOGGLE_PANEL" });
+}
+
+chrome.action.onClicked.addListener(async (tab) => {
+  if (!tab.id) return;
+  if (!isPortal(tab.url)) {
+    await showNotice(tab.id).catch(console.error);
+    return;
+  }
+  try {
+    await togglePanel(tab.id);
+  } catch (error) {
+    await showNotice(tab.id, "recargar").catch(console.error);
+  }
+});
+
+chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
+  if (isPortal(changeInfo.url)) chrome.action.setPopup({ tabId, popup: "" }).catch(() => {});
 });
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
