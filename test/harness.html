@@ -1,0 +1,216 @@
+<!DOCTYPE html>
+<html lang="es">
+  <head>
+    <meta charset="utf-8" />
+    <title>Cuaderno filler harness</title>
+  </head>
+  <body>
+    <table id="saved">
+      <tr>
+        <th>Fecha</th>
+        <th>Horas</th>
+        <th>Descripción</th>
+      </tr>
+    </table>
+    <input type="hidden" name="fechaOculta" value="01/01/2020" />
+    <div id="formulario">
+      <table>
+        <tr>
+          <td>Fecha (dd/mm/yyyy)*:</td>
+          <td><input type="text" id="fecha" name="fecha" /></td>
+          <td>Horas*:</td>
+          <td><input type="text" id="horas" name="horas" /></td>
+        </tr>
+        <tr>
+          <td>Descripción de las Actividades desarrolladas* (0/2000 caracteres):</td>
+          <td colspan="3"><textarea id="descripcion" name="descripcion"></textarea></td>
+        </tr>
+        <tr>
+          <td>Observaciones (0/2000 caracteres):</td>
+          <td colspan="3"><textarea id="observaciones" name="observaciones"></textarea></td>
+        </tr>
+        <tr>
+          <td>Dificultades en la realización:</td>
+          <td colspan="3"><textarea id="dificultades" name="dificultades"></textarea></td>
+        </tr>
+        <tr>
+          <td colspan="4" style="text-align: center"><a href="#" id="nueva">Nueva</a></td>
+        </tr>
+      </table>
+    </div>
+    <pre id="result">RUNNING</pre>
+    <script>
+      const store = {};
+      const storageListeners = [];
+      globalThis.chrome = {
+        runtime: {
+          lastError: null,
+          sendMessage(message, callback) {
+            if (message.type === "WHOAMI") callback({ tabId: 1 });
+            else callback({ ok: true });
+          },
+          onMessage: { addListener() {} },
+        },
+        storage: {
+          local: {
+            get(key, callback) {
+              callback({ [key]: store[key] === undefined ? undefined : structuredClone(store[key]) });
+            },
+            set(obj, callback) {
+              const changes = {};
+              for (const [key, value] of Object.entries(obj)) {
+                store[key] = structuredClone(value);
+                changes[key] = { newValue: structuredClone(value) };
+              }
+              for (const listener of storageListeners) listener(changes, "local");
+              if (callback) callback();
+            },
+          },
+          onChanged: { addListener(fn) { storageListeners.push(fn); } },
+        },
+      };
+    </script>
+    <script src="../shared/plan.js"></script>
+    <script src="../panel/panel.js"></script>
+    <script src="../content/content.js"></script>
+    <script>
+      const savedRows = [];
+      let rejectSave = false;
+      document.getElementById("nueva").addEventListener("click", (event) => {
+        event.preventDefault();
+        const fecha = document.getElementById("fecha").value;
+        const horas = document.getElementById("horas").value;
+        const descripcion = document.getElementById("descripcion").value;
+        const observaciones = document.getElementById("observaciones").value;
+        const dificultades = document.getElementById("dificultades").value;
+        if (rejectSave) {
+          alert("La fecha no es válida");
+          return;
+        }
+        if (!fecha || !horas || !descripcion) {
+          alert("Rellena los campos obligatorios");
+          return;
+        }
+        savedRows.push({ fecha, horas, descripcion, observaciones, dificultades });
+        const row = document.createElement("tr");
+        row.innerHTML = `<td>${fecha}</td><td>${horas}</td><td>${descripcion}</td>`;
+        document.getElementById("saved").appendChild(row);
+        for (const id of ["fecha", "horas", "descripcion", "observaciones", "dificultades"]) {
+          document.getElementById(id).value = "";
+        }
+      });
+
+      function queue(plan) {
+        return {
+          status: "running",
+          index: 0,
+          pauseMs: 0,
+          phase: "idle",
+          tabId: 1,
+          error: null,
+          entries: plan.submittable.map((entry) => ({
+            iso: entry.iso,
+            fecha: entry.fecha,
+            horas: entry.horas,
+            descripcion: entry.descripcion,
+            observaciones: entry.observaciones,
+            dificultades: entry.dificultades,
+            status: "pending",
+          })),
+        };
+      }
+
+      function fail(message) {
+        document.getElementById("result").textContent = `FAIL: ${message}`;
+        document.title = "FAIL";
+      }
+
+      (async () => {
+        try {
+          window.open = () => {
+            throw new Error("se ha abierto una ventana");
+          };
+          await CuadernoPanel.show();
+          const host = document.getElementById("cuaderno-dual-host");
+          const root = host && host.shadowRoot;
+          const text = root ? root.textContent : "";
+          if (!root || !text.includes("Desde") || !text.includes("Rellenar") || !text.includes("Descripción")) {
+            throw new Error("el panel no está en español");
+          }
+          if (/\b(Fill|Resume|Stop|From|To)\b/.test(text)) {
+            throw new Error(`queda texto en inglés: ${text.slice(0, 180)}`);
+          }
+          const desc = root.getElementById("descripcion");
+          desc.value = "Apoyo en el mantenimiento";
+          desc.dispatchEvent(new Event("input", { bubbles: true }));
+          const hours = root.querySelector(".day .hours");
+          hours.value = "6";
+          hours.dispatchEvent(new Event("input", { bubbles: true }));
+          const summary = root.getElementById("summary").textContent;
+          if (!summary.includes("6 h") || !summary.includes("día")) throw new Error(summary);
+          const fill = root.getElementById("fill");
+          if (fill.disabled || !fill.textContent.startsWith("Rellenar")) throw new Error(fill.textContent);
+          CuadernoPanel.hide();
+
+          const detected = CuadernoFill.detectFields();
+          if (!detected.ok) throw new Error(detected.error);
+          if (detected.fields.fecha.id !== "fecha") throw new Error("Fecha field was not found");
+          if (detected.fields.horas.id !== "horas") throw new Error("Horas field was not found");
+          if (detected.fields.descripcion.id !== "descripcion") throw new Error("Descripción field was not found");
+          if (detected.fields.observaciones.id !== "observaciones") throw new Error("Observaciones field was not found");
+          if (detected.fields.dificultades.id !== "dificultades") throw new Error("Dificultades field was not found");
+          if (detected.fields.nueva.id !== "nueva") throw new Error("Nueva button was not found");
+
+          const plan = CuadernoPlan.buildPlan({
+            ...CuadernoPlan.defaultSettings(new Date(2026, 10, 11)),
+            start: "2026-11-09",
+            end: "2026-11-11",
+            descripcion: "Trabajo del {dia} ({fecha})",
+            observaciones: "Ok {dia}",
+            dificultades: "Ninguna",
+          });
+          store.run = queue(plan);
+          await CuadernoFill.kick();
+          if (store.run.status !== "done") throw new Error(`status ${store.run.status}: ${store.run.error || ""}`);
+          if (savedRows.length !== 3) throw new Error(`saved ${savedRows.length} rows, expected 3`);
+          if (savedRows[0].fecha !== "09/11/2026" || savedRows[0].horas !== "8") {
+            throw new Error(`first row ${savedRows[0].fecha} ${savedRows[0].horas}`);
+          }
+          if (savedRows[0].descripcion !== "Trabajo del lunes (09/11/2026)") {
+            throw new Error(`description ${savedRows[0].descripcion}`);
+          }
+          if (savedRows[0].observaciones !== "Ok lunes" || savedRows[0].dificultades !== "Ninguna") {
+            throw new Error("optional fields were not copied");
+          }
+          if (savedRows.map((row) => row.fecha).join(",") !== "09/11/2026,10/11/2026,11/11/2026") {
+            throw new Error(`dates ${savedRows.map((row) => row.fecha).join(",")}`);
+          }
+
+          const before = savedRows.length;
+          store.run = queue(plan);
+          await CuadernoFill.kick();
+          if (savedRows.length !== before) throw new Error("days already on the page were submitted again");
+          if (store.run.status !== "done") throw new Error(`skip rerun status ${store.run.status}`);
+
+          rejectSave = true;
+          const blocked = CuadernoPlan.buildPlan({
+            ...CuadernoPlan.defaultSettings(new Date(2026, 10, 12)),
+            start: "2026-11-12",
+            end: "2026-11-12",
+            descripcion: "Jueves en el taller",
+          });
+          store.run = queue(blocked);
+          await CuadernoFill.kick();
+          if (store.run.status !== "error") throw new Error(`expected an error, got ${store.run.status}`);
+          if (!String(store.run.error).includes("no es válida")) throw new Error(`error text: ${store.run.error}`);
+          if (savedRows.length !== before) throw new Error("rejected day was still stored");
+
+          document.getElementById("result").textContent = "PASS";
+          document.title = "PASS";
+        } catch (error) {
+          fail(error && error.stack ? error.stack : String(error));
+        }
+      })();
+    </script>
+  </body>
+</html>
