@@ -78,6 +78,31 @@
     return target ? Number(target[1]) : null;
   }
 
+  function objectDict(str, objAt) {
+    const open = str.indexOf("<<", objAt);
+    if (objAt < 0 || open < 0) return null;
+    const close = dictEnd(str, open);
+    return close < 0 ? null : { open, close, dict: str.slice(open, close) };
+  }
+
+  function objectStream(str, bytes, objAt) {
+    const found = objectDict(str, objAt);
+    if (!found) return null;
+    const { close, dict } = found;
+    const after = /^\s*stream\r?\n/.exec(str.slice(close, close + 32));
+    if (!after) return null;
+    const begin = close + after[0].length;
+    let length = streamLength(str, dict);
+    if (length == null) {
+      const end = str.indexOf("endstream", begin);
+      if (end < 0) return null;
+      length = end - begin;
+      while (length > 0 && (bytes[begin + length - 1] === 0x0a || bytes[begin + length - 1] === 0x0d)) length -= 1;
+    }
+    const filter = /\/Filter\s*\[?\s*\/(\w+)/.exec(dict);
+    return { dict, filter: filter ? filter[1] : "", data: bytes.subarray(begin, begin + length) };
+  }
+
   function findPdfImages(bytes) {
     const str = binaryString(bytes);
     const images = [];
@@ -85,32 +110,43 @@
     let match;
     while ((match = re.exec(str))) {
       const objAt = str.lastIndexOf("obj", match.index);
-      const open = str.indexOf("<<", objAt);
-      if (objAt < 0 || open < 0 || open > match.index) continue;
-      const close = dictEnd(str, open);
-      if (close < 0) continue;
-      const dict = str.slice(open, close);
-      const after = /^\s*stream\r?\n/.exec(str.slice(close, close + 32));
-      if (!after) continue;
-      const begin = close + after[0].length;
-      let length = streamLength(str, dict);
-      if (length == null) {
-        const end = str.indexOf("endstream", begin);
-        if (end < 0) continue;
-        length = end - begin;
-        while (length > 0 && (bytes[begin + length - 1] === 0x0a || bytes[begin + length - 1] === 0x0d)) length -= 1;
-      }
-      const filter = /\/Filter\s*\[?\s*\/(\w+)/.exec(dict);
+      const stream = objectStream(str, bytes, objAt);
+      if (!stream || str.indexOf("<<", objAt) > match.index) continue;
+      const { dict, filter, data } = stream;
       images.push({
         width: dictNumber(dict, "Width"),
         height: dictNumber(dict, "Height"),
         bpc: dictNumber(dict, "BitsPerComponent") || 8,
-        filter: filter ? filter[1] : "",
+        filter,
         predictor: dictNumber(dict, "Predictor") || 1,
-        data: bytes.subarray(begin, begin + length),
+        data,
       });
     }
     return images.filter((img) => img.width > 0 && img.height > 0);
+  }
+
+  // Páginas dibujadas con vectores (p. ej. exportadas desde Excel): sin imagen que extraer.
+  function findPdfPages(bytes) {
+    const str = binaryString(bytes);
+    const pages = [];
+    const re = /\/Type\s*\/Page(?![\w])/g;
+    let match;
+    while ((match = re.exec(str))) {
+      const found = objectDict(str, str.lastIndexOf("obj", match.index));
+      if (!found || found.open > match.index) continue;
+      const contents = /\/Contents\s*(\[[^\]]*\]|\d+\s+\d+\s+R)/.exec(found.dict);
+      if (!contents) continue;
+      const box = /\/MediaBox\s*\[([^\]]+)\]/.exec(found.dict) || /\/MediaBox\s*\[([^\]]+)\]/.exec(str);
+      const mediaBox = box ? box[1].trim().split(/\s+/).map(Number) : [0, 0, 612, 792];
+      const streams = [];
+      for (const ref of contents[1].matchAll(/(\d+)\s+(\d+)\s+R/g)) {
+        const obj = new RegExp(`(?:^|[\\s>])${ref[1]}\\s+${ref[2]}\\s+obj`).exec(str);
+        const stream = obj && objectStream(str, bytes, obj.index + obj[0].length - 3);
+        if (stream) streams.push(stream);
+      }
+      if (streams.length) pages.push({ mediaBox, streams });
+    }
+    return pages;
   }
 
   async function inflate(data) {
@@ -174,6 +210,313 @@
     const channels = raw.length / pixels;
     if (channels !== 3 && channels !== 4) return null;
     return { width: img.width, height: img.height, channels, data: raw };
+  }
+
+  const PDF_ESCAPES = { n: "\n", r: "\r", t: "\t", b: "\b", f: "\f" };
+
+  function* pdfTokens(src) {
+    const delimiter = /[\s()<>[\]{}/%]/;
+    let i = 0;
+    while (i < src.length) {
+      const ch = src[i];
+      if (/\s/.test(ch)) {
+        i += 1;
+      } else if (ch === "%") {
+        while (i < src.length && src[i] !== "\n" && src[i] !== "\r") i += 1;
+      } else if (ch === "(") {
+        let depth = 1;
+        let out = "";
+        i += 1;
+        while (i < src.length && depth > 0) {
+          const c = src[i];
+          if (c === "\\") {
+            const next = src[i + 1];
+            const octal = /^[0-7]{1,3}/.exec(src.slice(i + 1, i + 4));
+            if (octal) {
+              out += String.fromCharCode(parseInt(octal[0], 8) & 0xff);
+              i += 1 + octal[0].length;
+              continue;
+            }
+            if (next !== "\n" && next !== "\r") out += PDF_ESCAPES[next] || next;
+            i += 2;
+            continue;
+          }
+          if (c === "(") depth += 1;
+          if (c === ")") depth -= 1;
+          if (depth > 0) out += c;
+          i += 1;
+        }
+        yield { value: out };
+      } else if (ch === "<" && src[i + 1] === "<") {
+        yield { open: true };
+        i += 2;
+      } else if (ch === ">" && src[i + 1] === ">") {
+        yield { close: true };
+        i += 2;
+      } else if (ch === "<") {
+        const end = src.indexOf(">", i);
+        const hex = src.slice(i + 1, end < 0 ? src.length : end).replace(/\s/g, "");
+        // Sin leer la fuente no sabemos qué glifo es; basta con que se vea algo oscuro.
+        yield { value: "0".repeat(Math.max(1, Math.round(hex.length / 4))) };
+        i = end < 0 ? src.length : end + 1;
+      } else if (ch === "[" || ch === "{") {
+        yield { open: true };
+        i += 1;
+      } else if (ch === "]" || ch === "}") {
+        yield { close: true };
+        i += 1;
+      } else {
+        let end = i + 1;
+        while (end < src.length && !delimiter.test(src[end])) end += 1;
+        const word = src.slice(i, end);
+        i = end;
+        if (ch === "/") yield { value: word };
+        else if (/^[+-]?(\d+\.?\d*|\.\d+)$/.test(word)) yield { value: Number(word) };
+        else if (word === "ID") {
+          const ei = /\sEI(?=[\s]|$)/g;
+          ei.lastIndex = i;
+          const found = ei.exec(src);
+          i = found ? found.index + found[0].length : src.length;
+        } else yield { op: word };
+      }
+    }
+  }
+
+  function multiply(m, n) {
+    return [
+      m[0] * n[0] + m[1] * n[2],
+      m[0] * n[1] + m[1] * n[3],
+      m[2] * n[0] + m[3] * n[2],
+      m[2] * n[1] + m[3] * n[3],
+      m[4] * n[0] + m[5] * n[2] + n[4],
+      m[4] * n[1] + m[5] * n[3] + n[5],
+    ];
+  }
+
+  function pdfColor(args) {
+    const v = args.map((n) => Math.max(0, Math.min(1, Number(n) || 0)));
+    let rgb;
+    if (v.length >= 4) rgb = v.slice(0, 3).map((c) => (1 - c) * (1 - v[3]));
+    else if (v.length === 3) rgb = v;
+    else rgb = [v[0] || 0, v[0] || 0, v[0] || 0];
+    return `rgb(${rgb.map((c) => Math.round(c * 255)).join(",")})`;
+  }
+
+  function drawPdfContent(ctx, src) {
+    const IDENTITY = [1, 0, 0, 1, 0, 0];
+    const stack = [];
+    const nested = [];
+    const saved = [];
+    let text = { size: 1, charSpace: 0, wordSpace: 0, scale: 1, leading: 0, rise: 0 };
+    let tm = IDENTITY;
+    let lm = IDENTITY;
+    let pendingClip = null;
+
+    const endPath = () => {
+      if (pendingClip) ctx.clip(pendingClip);
+      pendingClip = null;
+      ctx.beginPath();
+    };
+    const moveText = (tx, ty) => {
+      lm = multiply([1, 0, 0, 1, tx, ty], lm);
+      tm = lm;
+    };
+    const show = (value) => {
+      if (typeof value !== "string" || !value) return;
+      ctx.save();
+      ctx.transform(...tm);
+      ctx.translate(0, text.rise);
+      ctx.scale(text.scale, -1);
+      ctx.font = `${text.size}px sans-serif`;
+      ctx.fillText(value, 0, 0);
+      const width = ctx.measureText(value).width;
+      ctx.restore();
+      const spaces = value.split(" ").length - 1;
+      const advance = (width + text.charSpace * value.length + text.wordSpace * spaces) * text.scale;
+      tm = multiply([1, 0, 0, 1, advance, 0], tm);
+    };
+
+    for (const token of pdfTokens(src)) {
+      if (token.open) {
+        nested.push(stack.length);
+        continue;
+      }
+      if (token.close) {
+        const start = nested.pop();
+        if (start != null) stack.push(stack.splice(start));
+        continue;
+      }
+      if (!token.op) {
+        stack.push(token.value);
+        continue;
+      }
+      const a = stack.splice(0);
+      const n = a.map(Number);
+      switch (token.op) {
+        case "q":
+          ctx.save();
+          saved.push({ ...text });
+          break;
+        case "Q":
+          ctx.restore();
+          if (saved.length) text = saved.pop();
+          break;
+        case "cm":
+          ctx.transform(...n.slice(0, 6));
+          break;
+        case "w":
+          ctx.lineWidth = n[0];
+          break;
+        case "g":
+        case "rg":
+        case "k":
+        case "sc":
+        case "scn":
+          ctx.fillStyle = pdfColor(a.filter((x) => typeof x === "number"));
+          break;
+        case "G":
+        case "RG":
+        case "K":
+        case "SC":
+        case "SCN":
+          ctx.strokeStyle = pdfColor(a.filter((x) => typeof x === "number"));
+          break;
+        case "m":
+          ctx.moveTo(n[0], n[1]);
+          break;
+        case "l":
+          ctx.lineTo(n[0], n[1]);
+          break;
+        case "c":
+          ctx.bezierCurveTo(...n.slice(0, 6));
+          break;
+        case "v":
+        case "y":
+          ctx.quadraticCurveTo(n[0], n[1], n[2], n[3]);
+          break;
+        case "h":
+          ctx.closePath();
+          break;
+        case "re":
+          ctx.rect(n[0], n[1], n[2], n[3]);
+          break;
+        case "f":
+        case "F":
+          ctx.fill("nonzero");
+          endPath();
+          break;
+        case "f*":
+          ctx.fill("evenodd");
+          endPath();
+          break;
+        case "B":
+        case "b":
+        case "B*":
+        case "b*":
+          ctx.fill(token.op.endsWith("*") ? "evenodd" : "nonzero");
+          ctx.stroke();
+          endPath();
+          break;
+        case "S":
+        case "s":
+          ctx.stroke();
+          endPath();
+          break;
+        case "n":
+          endPath();
+          break;
+        case "W":
+          pendingClip = "nonzero";
+          break;
+        case "W*":
+          pendingClip = "evenodd";
+          break;
+        case "BT":
+          tm = IDENTITY;
+          lm = IDENTITY;
+          break;
+        case "Tf":
+          text.size = n[1] || text.size;
+          break;
+        case "Tc":
+          text.charSpace = n[0];
+          break;
+        case "Tw":
+          text.wordSpace = n[0];
+          break;
+        case "Tz":
+          text.scale = n[0] / 100;
+          break;
+        case "TL":
+          text.leading = n[0];
+          break;
+        case "Ts":
+          text.rise = n[0];
+          break;
+        case "Td":
+          moveText(n[0], n[1]);
+          break;
+        case "TD":
+          text.leading = -n[1];
+          moveText(n[0], n[1]);
+          break;
+        case "Tm":
+          lm = n.slice(0, 6);
+          tm = lm;
+          break;
+        case "T*":
+          moveText(0, -text.leading);
+          break;
+        case "Tj":
+          show(a[0]);
+          break;
+        case "'":
+          moveText(0, -text.leading);
+          show(a[0]);
+          break;
+        case '"':
+          text.wordSpace = n[0];
+          text.charSpace = n[1];
+          moveText(0, -text.leading);
+          show(a[2]);
+          break;
+        case "TJ":
+          for (const part of a[0] || []) {
+            if (typeof part === "number") tm = multiply([1, 0, 0, 1, (-part / 1000) * text.size * text.scale, 0], tm);
+            else show(part);
+          }
+          break;
+        default:
+          break;
+      }
+    }
+  }
+
+  async function renderPdfPage(page) {
+    const [x0, y0, x1, y1] = page.mediaBox;
+    // Las líneas de la cuadrícula miden 0,6 pt: a 3 px/pt siguen siendo líneas enteras.
+    const scale = 3;
+    const width = Math.round((x1 - x0) * scale);
+    const height = Math.round((y1 - y0) * scale);
+    const canvas =
+      typeof OffscreenCanvas !== "undefined"
+        ? new OffscreenCanvas(width, height)
+        : Object.assign(document.createElement("canvas"), { width, height });
+    const ctx = canvas.getContext("2d", { willReadFrequently: true });
+    ctx.fillStyle = "#fff";
+    ctx.fillRect(0, 0, width, height);
+    ctx.setTransform(scale, 0, 0, -scale, -x0 * scale, y1 * scale);
+    ctx.fillStyle = "#000";
+    ctx.strokeStyle = "#000";
+    for (const stream of page.streams) {
+      let data = stream.data;
+      if (stream.filter === "FlateDecode") data = await inflate(data);
+      else if (stream.filter) continue;
+      ctx.save();
+      drawPdfContent(ctx, binaryString(data));
+      ctx.restore();
+    }
+    return { width, height, channels: 4, data: ctx.getImageData(0, 0, width, height).data };
   }
 
   function mergeLines(values) {
@@ -366,6 +709,13 @@
       try {
         const pixels = await decodePdfImage(image);
         if (pixels) return analysePixels(pixels, now);
+      } catch (error) {
+        lastError = error;
+      }
+    }
+    for (const page of findPdfPages(bytes)) {
+      try {
+        return analysePixels(await renderPdfPage(page), now);
       } catch (error) {
         lastError = error;
       }
