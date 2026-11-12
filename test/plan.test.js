@@ -1,6 +1,6 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { buildPlan, defaultSettings, parseHoursPaste, formatHours } = require("../shared/plan.js");
+const { buildPlan, defaultSettings, parseHoursPaste, formatHours, summarize, findMissing } = require("../shared/plan.js");
 
 test("builds weekdays from Monday through Sunday and skips zeros", () => {
   const plan = buildPlan({
@@ -85,6 +85,23 @@ test("uses calendar hours by day type and always skips festivos and vacaciones",
     plan.entries.filter((entry) => entry.skipped).map((entry) => entry.calKind),
     ["festivo", "vacaciones"]
   );
+});
+
+test("skips registered days and finds the work days still missing", () => {
+  const settings = { ...defaultSettings(new Date(2026, 10, 1)), descripcion: "Trabajo" };
+  const registered = ["2026-11-02", "2026-11-03", "2026-11-05", "2026-11-06"];
+
+  const plan = buildPlan({ ...settings, start: "2026-11-02", end: "2026-11-06", registered });
+  assert.deepEqual(plan.submittable.map((entry) => entry.fecha), ["04/11/2026"]);
+  assert.deepEqual(summarize(plan), { days: 1, hours: 8, skipped: 0, registered: 4, first: "04/11/2026", last: "04/11/2026" });
+
+  const { last, missing } = findMissing(settings, registered, { today: "2026-11-11" });
+  assert.equal(last, "2026-11-06");
+  assert.deepEqual(missing, ["2026-11-04", "2026-11-09", "2026-11-10", "2026-11-11"]);
+
+  const fromContract = findMissing(settings, registered, { today: "2026-11-11", from: "2026-10-29", to: "2026-11-10" });
+  assert.deepEqual(fromContract.missing, ["2026-10-29", "2026-10-30", "2026-11-04", "2026-11-09", "2026-11-10"]);
+  assert.deepEqual(findMissing(settings, [], { today: "2026-11-11" }), { last: "", missing: ["2026-11-11"] });
 });
 
 test("parses pasted dates and hours", () => {

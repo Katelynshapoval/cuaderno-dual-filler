@@ -79,6 +79,8 @@
   let calendar = null;
   let calWeekStart = null;
   let calWeekAnchor = null;
+  // Fechas ya registradas en el portal, tras pulsar "Ver qué días me faltan". Solo en memoria.
+  let registered = null;
   const NEAR_LIMIT = 1700;
 
   function dias(count) {
@@ -190,7 +192,8 @@
       els.statHours.textContent = summary.hours;
       const span = summary.first === summary.last ? summary.first : `${summary.first} – ${summary.last}`;
       const skipped = summary.skipped === 1 ? " · 1 omitido" : summary.skipped ? ` · ${summary.skipped} omitidos` : "";
-      els.statRange.textContent = `${span}${skipped}`;
+      const done = summary.registered === 1 ? " · 1 ya registrado" : summary.registered ? ` · ${summary.registered} ya registrados` : "";
+      els.statRange.textContent = `${span}${skipped}${done}`;
     }
     els.hint.textContent = plan.errors[0] || "";
     const running = currentRun && currentRun.status === "running";
@@ -263,6 +266,10 @@
       setChip("ok", "Hecho");
       els.progressLabel.textContent = "Completado";
       const entries = currentRun.entries || [];
+      if (registered) {
+        const stored = entries.filter((entry) => entry.iso && (entry.status === "done" || entry.status === "exists"));
+        registered = [...new Set([...registered, ...stored.map((entry) => entry.iso)])].sort();
+      }
       const saved = entries.filter((entry) => entry.status === "done").length;
       const existed = entries.filter((entry) => entry.status === "exists").length;
       let message = saved === 0 ? "No se ha guardado ningún día nuevo." : saved === 1 ? "Se ha guardado 1 día." : `Se han guardado ${saved} días.`;
@@ -425,7 +432,56 @@
   }
 
   function withCalendar(settings) {
-    return calendar ? { ...settings, calendar: { days: calendar.days, hours: calendar.hours } } : settings;
+    const extra = registered ? { registered } : {};
+    return calendar
+      ? { ...settings, ...extra, calendar: { days: calendar.days, hours: calendar.hours } }
+      : { ...settings, ...extra };
+  }
+
+  function setMissingNote(kind, text) {
+    els.missingNote.hidden = !text;
+    els.missingNote.className = kind ? `records-note ${kind}` : "records-note";
+    els.missingNote.textContent = text;
+  }
+
+  function ago(iso, today) {
+    const days = Math.round((Plan.parseISO(today) - Plan.parseISO(iso)) / 86400000);
+    if (days <= 0) return "hoy";
+    if (days === 1) return "ayer";
+    return `hace ${days} días`;
+  }
+
+  async function onMissing() {
+    els.missing.disabled = true;
+    setMissingNote("", "Buscando tus registros en el portal…");
+    try {
+      registered = await globalThis.CuadernoFill.listedDates();
+      const today = Plan.todayISO();
+      const settings = withCalendar(readSettingsFromForm());
+      const { last, missing } = Plan.findMissing(settings, registered, {
+        today,
+        from: calendar?.firstWork,
+        to: calendar?.lastWork,
+      });
+      const parts = [last ? `Último día registrado: ${formatISO(last)} (${ago(last, today)}).` : "No tienes ningún día registrado todavía."];
+      if (!missing.length) {
+        parts.push("No te falta ningún día de trabajo hasta hoy.");
+      } else {
+        const gaps = missing.filter((iso) => iso < last).length;
+        const list = missing.length <= 6 ? `: ${missing.map((iso) => formatISO(iso).slice(0, 5)).join(", ")}` : "";
+        parts.push(`Te faltan ${dias(missing.length)}${list}.`);
+        if (gaps) parts.push(gaps === 1 ? "Uno es un hueco anterior al último registro." : `${gaps} son huecos anteriores al último registro.`);
+        parts.push("He puesto las fechas para rellenarlos; los días ya registrados se saltan.");
+        els.start.value = missing[0];
+        els.end.value = missing[missing.length - 1];
+      }
+      setMissingNote("", parts.join(" "));
+      onStructureChange();
+    } catch (error) {
+      setMissingNote("error", (error && error.message) || "No he podido leer tus registros del portal.");
+    } finally {
+      els.missing.disabled = false;
+    }
   }
 
   function mondayOf(iso) {
@@ -448,7 +504,8 @@
     const cells = week.entries.map((entry) => {
       if (!entry.skipped && entry.hoursNum > 0) total += entry.hoursNum;
       let value = `${Number.isFinite(entry.hoursNum) ? entry.hoursNum : 0} h`;
-      if (entry.calKind === "festivo") value = "Festivo";
+      if (entry.registered) value = "Hecho";
+      else if (entry.calKind === "festivo") value = "Festivo";
       else if (entry.calKind === "vacaciones") value = "Vacac.";
       else if (entry.skipped) value = "—";
       const inRange = entry.iso >= settings.start && entry.iso <= settings.end;
@@ -610,6 +667,8 @@
     els.minimize.addEventListener("click", onMinimize);
     els.presets.addEventListener("click", onPreset);
     els.tokens.addEventListener("click", onToken);
+    els.missing.hidden = !globalThis.CuadernoFill?.listedDates;
+    els.missing.addEventListener("click", () => onMissing().catch(() => {}));
     bindCalendar();
     els.fill.addEventListener("click", () => onFill().catch(() => {}));
     els.stop.addEventListener("click", () => onStop().catch(() => {}));
@@ -652,6 +711,10 @@
             <div class="dates">
               <label>Desde <input id="start" type="date" autocomplete="off" /></label>
               <label>Hasta <input id="end" type="date" autocomplete="off" /></label>
+            </div>
+            <div class="records">
+              <button id="missing" type="button" class="text-button">Ver qué días me faltan</button>
+              <p id="missing-note" class="records-note" role="status" aria-live="polite" hidden></p>
             </div>
           </section>
           <section class="card">
@@ -834,6 +897,8 @@
       calWeekLabel: $("cal-week-label"),
       calWeekDays: $("cal-week-days"),
       week: $("week"),
+      missing: $("missing"),
+      missingNote: $("missing-note"),
     };
   }
 

@@ -119,6 +119,7 @@
     const textOverrides = settings.textOverrides || {};
     const calendarDays = settings.calendar?.days || {};
     const calendarHours = settings.calendar?.hours || {};
+    const registered = new Set(settings.registered || []);
     const entries = [];
 
     for (let cursor = new Date(start); cursor <= end; cursor.setDate(cursor.getDate() + 1)) {
@@ -132,7 +133,8 @@
       const hoursNum = parseHours(raw);
       const horas = formatHours(raw, settings.commaDecimals);
       const dayOff = !overridden && (calKind === "festivo" || calKind === "vacaciones");
-      const skipped = dayOff || (settings.skipZero !== false && !(hoursNum > 0));
+      const isRegistered = registered.has(iso);
+      const skipped = isRegistered || dayOff || (settings.skipZero !== false && !(hoursNum > 0));
       const base = {
         iso,
         fecha: formatES(cursor),
@@ -142,6 +144,7 @@
         horas,
         hoursNum,
         skipped,
+        registered: isRegistered,
         calKind,
       };
       const customText = String(textOverrides[iso] || "").trim();
@@ -201,14 +204,32 @@
     const days = plan.submittable.length;
     const hours = plan.submittable.reduce((total, entry) => total + entry.hoursNum, 0);
     const rounded = Math.round(hours * 100) / 100;
-    const skipped = plan.entries.filter((entry) => entry.skipped).length;
+    const registered = plan.entries.filter((entry) => entry.registered).length;
+    const skipped = plan.entries.filter((entry) => entry.skipped).length - registered;
     return {
       days,
       hours: rounded,
       skipped,
+      registered,
       first: plan.submittable[0]?.fecha || "",
       last: plan.submittable[plan.submittable.length - 1]?.fecha || "",
     };
+  }
+
+  // Días de trabajo sin registrar entre `from` (o el primer registro) y hoy, según el horario actual.
+  function findMissing(settings, registered, options) {
+    const dates = [...new Set(registered)].filter((iso) => parseISO(iso)).sort();
+    const today = options?.today || todayISO();
+    const last = dates.length ? dates[dates.length - 1] : "";
+    const candidates = [options?.from, dates[0]].filter((iso) => parseISO(iso) && iso <= today).sort();
+    let from = candidates[0] || today;
+    const limit = parseISO(today);
+    limit.setDate(limit.getDate() - (MAX_SPAN_DAYS - 1));
+    if (from < toISO(limit)) from = toISO(limit);
+    const to = options?.to && options.to < today ? options.to : today;
+    if (from > to) return { last, missing: [] };
+    const plan = buildPlan({ ...settings, start: from, end: to, descripcion: "-", registered: dates });
+    return { last, missing: plan.submittable.map((entry) => entry.iso) };
   }
 
   return {
@@ -227,5 +248,6 @@
     buildPlan,
     parseHoursPaste,
     summarize,
+    findMissing,
   };
 });

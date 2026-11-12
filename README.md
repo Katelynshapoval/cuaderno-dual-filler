@@ -39,7 +39,7 @@ Si Chrome muestra un aviso sobre extensiones en modo de desarrollador al abrirse
 
 1. Entra en el portal, abre tu cuaderno y ve a la página de **Desarrollo** (la que tiene Fecha, Horas, Descripción y el botón Nueva).
 2. Pulsa el icono de la extensión. Se abre el panel a la derecha (no se abre solo al entrar en la web).
-3. **Fechas**: elige el intervalo o usa los atajos (Hoy, Esta semana, Semana pasada, Este mes).
+3. **Fechas**: elige el intervalo o usa los atajos (Hoy, Esta semana, Semana pasada, Este mes). Con **Ver qué días me faltan** la extensión lee todos tus registros del portal, te dice cuál fue el último y qué días de trabajo faltan (también los huecos anteriores), y pone las fechas para rellenar solo esos. Si has subido el calendario, busca desde el inicio del contrato.
 4. **Horario**: escribe las horas de cada día de la semana. Los días con 0 horas se saltan. Si tienes el PDF del calendario FP Dual, súbelo y ajusta las horas de cada tipo de día. Vale cualquier versión del calendario: el PDF exportado desde Excel (en el que puedes seleccionar y copiar el texto), un PDF escaneado o una captura en PNG o JPG.
 5. **Descripción**: escribe lo que has hecho. Observaciones y dificultades son opcionales.
 6. Revisa el resumen de abajo (días, horas e intervalo) y pulsa **Rellenar**.

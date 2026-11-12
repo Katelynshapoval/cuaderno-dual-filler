@@ -375,6 +375,65 @@
     return false;
   }
 
+  function datesInListing(root) {
+    const dates = new Set();
+    for (const cell of root.querySelectorAll("tr.listado td, #listado td")) {
+      const text = (cell.textContent || "").replace(/\u00a0/g, " ").trim();
+      const match = /^(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{4})$/.exec(text);
+      if (match) dates.add(`${match[3]}-${match[2].padStart(2, "0")}-${match[1].padStart(2, "0")}`);
+    }
+    return dates;
+  }
+
+  function pageLinks(root) {
+    const pages = new Set();
+    for (const el of root.querySelectorAll("a[href], [onclick]")) {
+      const code = `${el.getAttribute("href") || ""} ${el.getAttribute("onclick") || ""}`;
+      for (const match of code.matchAll(/paginar\(\s*'[^']*'\s*,\s*'[^']*'\s*,\s*'?(\d+)'?\s*\)/g)) pages.add(match[1]);
+    }
+    return pages;
+  }
+
+  // El listado está paginado: se piden todas las páginas como haría paginar(), sin salir de esta.
+  async function listedDates() {
+    const form = document.getElementById("formulario") || (document.getElementById("FECHA") || {}).form;
+    const visible = datesInListing(document);
+    if (!form || !document.getElementById("pagina")) return [...visible].sort();
+    const dates = new Set();
+    const url = new URL("desarrollo.paginar.do", location.href);
+    const queue = ["0"];
+    const seen = new Set(queue);
+    for (let i = 0; i < queue.length && seen.size <= 80; i += 1) {
+      const body = new URLSearchParams(new FormData(form));
+      body.set("campoordenacion", "fecha");
+      body.set("tipoordenacion", "ASC");
+      body.set("pagina", queue[i]);
+      const response = await fetch(url, { method: "POST", body, credentials: "same-origin" });
+      if (!response.ok) throw new Error("El portal no ha devuelto el listado. Recarga la página e inténtalo otra vez.");
+      const doc = new DOMParser().parseFromString(await response.text(), "text/html");
+      if (!doc.getElementById("pagina")) {
+        throw new Error("No he podido leer el listado. Puede que la sesión haya caducado: recarga la página.");
+      }
+      const before = dates.size;
+      for (const iso of datesInListing(doc)) dates.add(iso);
+      const links = pageLinks(doc);
+      for (const page of links) {
+        if (!seen.has(page)) {
+          seen.add(page);
+          queue.push(page);
+        }
+      }
+      // Sin enlaces de página reconocibles, se prueba la siguiente hasta que no traiga nada nuevo.
+      const next = String(Number(queue[i]) + 1);
+      if (!links.size && dates.size > before && !seen.has(next)) {
+        seen.add(next);
+        queue.push(next);
+      }
+    }
+    for (const iso of visible) dates.add(iso);
+    return [...dates].sort();
+  }
+
   function isBenignAlert(message) {
     const text = norm(message);
     return /(guardad|correctament|se ha (anadido|creado|insertado)|exito|operacion realizada)/.test(text);
@@ -707,6 +766,7 @@
     detectFields,
     kick,
     dateAlreadyListed,
+    listedDates,
     setControlValue,
   };
 
